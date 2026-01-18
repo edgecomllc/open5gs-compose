@@ -1,0 +1,432 @@
+x-container-defaults: &container_defaults
+  restart: unless-stopped
+
+x-open5gs-svc-image: &open5gs_svc_image
+  image: docker.io/gradiant/open5gs:2.7.1
+  <<: *container_defaults
+
+x-open5gs-svc-envs: &open5gs_svc_envs
+  DB_URI: mongodb://mongodb/open5gs
+
+networks:
+  core-network: # here we set the network name
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+      - subnet:  10.103.0.0/16
+
+services:
+
+# Common services
+  mongodb:
+    image: mongo:5.0.10-focal
+    <<: *container_defaults
+    ports:
+      - ${MONGO_EXT_PORT}:27017
+    volumes:
+      - ${DOCKER_SHARED_DIR}/mongodb:/data/db
+      - .deploy/docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongo 127.0.0.1:27017/test --quiet
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+    networks:
+      core-network:
+
+  webui:
+    image: gradiant/open5gs-webui:2.7.1
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - ${WEBUI_EXT_PORT}:9999
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+  populate:
+    image: docker.io/gradiant/open5gs-dbctl:0.10.3
+    entrypoint: ""
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command:
+      - /bin/bash
+      - -c
+      - |
+        #open5gs-dbctl add_ue_with_apn 999991234567896 465B5CE8B199B49FAA5F0A2EE238A6BC E8ED289DEBA952E4283B54E88E6183CA internet
+        open5gs-dbctl add_ue_with_apn ${UE1_IMSI} ${UE1_KI} ${UE1_OP} internet
+        #exit 0
+        tail -f /dev/null
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+# 4G specific services
+  mme:
+    <<: *open5gs_svc_image
+    profiles: [4g-core]
+    privileged: true
+    command: open5gs-mmed
+    healthcheck:
+      test: ["CMD-SHELL", "apt update && apt install -y ethtool && ethtool --offload eth0 tx off"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - 36412:36412/sctp
+      - 2123:2123/udp
+      - 9091:9090/tcp
+    volumes:
+      - .deploy/docker/mme.yaml:/opt/open5gs/etc/open5gs/mme.yaml
+      - .deploy/docker/diameter/mme:/opt/open5gs/etc/diameter/mme
+    networks:
+      core-network:
+        ipv4_address: ${MME_IP}
+
+  pcrf:
+    <<: *open5gs_svc_image
+    profiles: [4g-core]
+    command:
+      - open5gs-pcrfd
+    volumes:
+      - .deploy/docker/pcrf.yaml:/opt/open5gs/etc/open5gs/pcrf.yaml
+      - .deploy/docker/diameter/pcrf:/opt/open5gs/etc/diameter/pcrf
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+  hss:
+    <<: *open5gs_svc_image
+    profiles: [4g-core]
+    command:
+      - open5gs-hssd
+    volumes:
+      - .deploy/docker/hss.yaml:/opt/open5gs/etc/open5gs/hss.yaml
+      - .deploy/docker/diameter/hss:/opt/open5gs/etc/diameter/hss
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+  sgwc:
+    <<: *open5gs_svc_image
+    profiles: [4g-core]
+    command:
+      - open5gs-sgwcd
+    volumes:
+      - .deploy/docker/sgwc.yaml:/opt/open5gs/etc/open5gs/sgwc.yaml
+    networks:
+      core-network:
+
+  sgwu:
+    <<: *open5gs_svc_image
+    profiles: [4g-core]
+    command:
+      - open5gs-sgwud
+    ports:
+      - 2152:2152/udp
+    volumes:
+      - .deploy/docker/sgwu.yaml:/opt/open5gs/etc/open5gs/sgwu.yaml
+    networks:
+      core-network:
+
+# 5G specifc services
+
+  nrf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    command:
+      - open5gs-nrfd
+    volumes:
+      - .deploy/docker/nrf.yaml:/opt/open5gs/etc/open5gs/nrf.yaml
+    healthcheck:
+      test: curl --http2-prior-knowledge http://nrf:7777/nnrf-nfm/v1/nf-instances || exit 1
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+    networks:
+      core-network:
+        aliases:
+          - open5gs-nrf-sbi
+
+  amf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-amfd
+    volumes:
+      - .deploy/docker/amf.yaml:/opt/open5gs/etc/open5gs/amf.yaml
+    networks:
+      core-network:
+
+  ausf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-ausfd
+    volumes:
+      - .deploy/docker/ausf.yaml:/opt/open5gs/etc/open5gs/ausf.yaml
+    networks:
+      core-network:
+
+  bsf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    command:
+      - open5gs-bsfd
+    volumes:
+      - .deploy/docker/bsf.yaml:/opt/open5gs/etc/open5gs/bsf.yaml
+    networks:
+      core-network:
+
+
+  nssf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-nssfd
+    volumes:
+      - .deploy/docker/nssf.yaml:/opt/open5gs/etc/open5gs/nssf.yaml
+    networks:
+      core-network:
+
+  pcf:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-pcfd
+    volumes:
+      - .deploy/docker/pcf.yaml:/opt/open5gs/etc/open5gs/pcf.yaml
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+  udm:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-udmd
+    volumes:
+      - .deploy/docker/udm.yaml:/opt/open5gs/etc/open5gs/udm.yaml
+    networks:
+      core-network:
+
+  udr:
+    <<: *open5gs_svc_image
+    profiles: [5g-core]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      nrf:
+        condition: service_healthy
+    command:
+      - open5gs-udrd
+    volumes:
+      - .deploy/docker/udr.yaml:/opt/open5gs/etc/open5gs/udr.yaml
+    environment:
+      <<: *open5gs_svc_envs
+    networks:
+      core-network:
+
+# 4G/5G shared services
+  smf:
+    <<: *open5gs_svc_image
+    profiles: [4g-core, 5g-core]
+    command:
+      - open5gs-smfd
+    ports:
+      - 9092:9090/tcp
+    volumes:
+      - .deploy/docker/smf.yaml:/opt/open5gs/etc/open5gs/smf.yaml
+      - .deploy/docker/diameter/smf:/opt/open5gs/etc/diameter/smf
+    networks:
+      core-network:
+
+  upf:
+    <<: *open5gs_svc_image
+    profiles: [4g-core, 5g-core]
+    ports:
+      - 9093:9090/tcp
+    volumes:
+      - .deploy/docker/upf.yaml:/opt/open5gs/etc/open5gs/upf.yaml
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.forwarding=1
+    entrypoint: ""
+    command:
+      - /bin/bash
+      - -c
+      - |
+        ip tuntap add name ogstun mode tun
+        ip link set ogstun up
+        echo "Setting IP 10.167.71.193/26 to device ogstun"
+        ip addr add 10.167.71.193/26 dev ogstun;
+        sysctl -w net.ipv4.ip_forward=1;
+        echo "Enable NAT for 10.167.71.193/26 and device ogstun"
+        iptables -t nat -A POSTROUTING -s 10.167.71.193/26 ! -o ogstun -j MASQUERADE;
+
+        open5gs-upfd
+    networks:
+      core-network:
+
+# 4G RAN test services
+  srsenb_zmq:
+    profiles: [4g-ran]
+    build: ./srslte
+    container_name: srsenb_zmq
+    stdin_open: true
+    tty: true
+    privileged: true
+    volumes:
+      - .deploy/docker/srslte:/mnt/srslte
+    env_file:
+      - .env
+    environment:
+      - COMPONENT_NAME=enb_zmq
+    expose:
+      - "36412/sctp"
+      - "2152/udp"
+      - "2000/tcp"
+      - "2001/tcp"
+    networks:
+      core-network:
+        ipv4_address: ${SRS_ENB_IP}
+
+
+  srsue_zmq:
+    profiles: [4g-ran]
+    build: ./srslte
+    container_name: srsue_zmq
+    stdin_open: true
+    tty: true
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    volumes:
+      - .deploy/docker/srslte:/mnt/srslte
+    env_file:
+      - .env
+    environment:
+      - COMPONENT_NAME=ue_zmq
+    expose:
+      - "2000/tcp"
+      - "2001/tcp"
+    networks:
+      core-network:
+        ipv4_address: ${SRS_UE_IP}
+
+
+# 5G RAN test services
+
+  gnb:
+    image: docker.io/gradiant/ueransim:3.2.6
+    profiles: [5g-ran]
+    <<: *container_defaults
+    depends_on:
+      - amf
+    environment:
+      - MCC=999
+      - MNC=70
+      - TAC=001
+      - SST=1
+      - SD=0x111111
+      - N2_IFACE=eth0
+      - N3_IFACE=eth0
+      - RADIO_IFACE=eth0
+      - AMF_HOSTNAME=amf
+    command: gnb
+    healthcheck:
+      test: "nr-cli UERANSIM-gnb-999-70-16 -e status | grep -q 'is-ngap-up: true'"
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+    networks:
+      core-network:
+
+  ue:
+    image: docker.io/gradiant/ueransim:3.2.6
+    profiles: [5g-ran]
+    <<: *container_defaults
+    depends_on:
+      populate:
+        condition: service_completed_successfully
+      gnb:
+        condition: service_healthy
+    environment:
+      - MCC=999
+      - MNC=70
+      - MSISDN=0000000001
+      - KEY=465B5CE8B199B49FAA5F0A2EE238A6BC
+      - OP=E8ED289DEBA952E4283B54E88E6183CA
+      - OP_TYPE=OPC
+      - APN=internet
+      - SST=1
+      - SD=0x111111
+      - GNB_HOSTNAME=gnb
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    command: "ue -n 1"
+    networks:
+      core-network:
+
+
+# Monitoring
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - 9091:9090
+    restart: unless-stopped
+    volumes:
+      - .deploy/docker/monitoring/config/prometheus:/etc/prometheus
+      - .deploy/docker/monitoring/data/prometheus:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.1.1
+    container_name: grafana
+    ports:
+      - 3000:3000
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=grafana
+    volumes:
+      - .deploy/docker/monitoring/config/grafana/provisioning:/etc/grafana/provisioning
+      - .deploy/docker/monitoring/config/grafana/dashboards:/etc/grafana/dashboards
