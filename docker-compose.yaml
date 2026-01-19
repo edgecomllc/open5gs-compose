@@ -96,6 +96,9 @@ services:
   pcrf:
     <<: *open5gs_svc_image
     profiles: [4g-core]
+    depends_on:
+      mongodb:
+        condition: service_healthy
     command:
       - open5gs-pcrfd
     volumes:
@@ -109,6 +112,9 @@ services:
   hss:
     <<: *open5gs_svc_image
     profiles: [4g-core]
+    depends_on:
+      mongodb:
+        condition: service_healthy
     command:
       - open5gs-hssd
     volumes:
