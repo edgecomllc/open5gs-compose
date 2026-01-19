@@ -12,10 +12,12 @@ mme:
   freeDiameter: /opt/open5gs/etc/diameter/mme/mme.conf
   s1ap:
     server:
-      - address: mme
+      - address: 0.0.0.0 #mme
+        port: 36412
   gtpc:
     server:
-      - address: mme
+      - address: 0.0.0.0 #mme
+        port: 2123
     client:
       sgwc:
         - address: sgwc

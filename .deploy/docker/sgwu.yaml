@@ -18,3 +18,4 @@ sgwu:
   gtpu:
     server:
       - address: sgwu
+        advertise: 10.0.0.60 
