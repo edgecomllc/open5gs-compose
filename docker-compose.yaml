@@ -441,3 +441,5 @@ services:
     volumes:
       - .deploy/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning
       - .deploy/docker/monitoring/grafana/dashboards:/etc/grafana/dashboards
+    networks:
+      core-network:
