@@ -63,11 +63,13 @@ services:
       - -c
       - |
         #open5gs-dbctl add_ue_with_apn 999991234567896 465B5CE8B199B49FAA5F0A2EE238A6BC E8ED289DEBA952E4283B54E88E6183CA internet
-        open5gs-dbctl add_ue_with_apn ${UE1_IMSI} ${UE1_KI} ${UE1_OP} internet
-        #exit 0
+        #open5gs-dbctl add_ue_with_apn ${UE1_IMSI} ${UE1_KI} ${UE1_OP} internet
+        while IFS=, read -r imsi ki op; do echo "add imsi $$imsi $$ki:$$op"; open5gs-dbctl add_ue_with_apn $$imsi $$ki $$op internet; done < /opt/open5gs/ue.list
         tail -f /dev/null
     environment:
       <<: *open5gs_svc_envs
+    volumes:
+      - .deploy/docker/ue.list:/opt/open5gs/ue.list
     networks:
       core-network:
 
