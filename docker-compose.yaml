@@ -16,6 +16,9 @@ networks:
       config:
       - subnet:  10.103.0.0/16
 
+volumes:
+  prometheus_data:
+
 services:
 
 # Common services
@@ -416,7 +419,7 @@ services:
     restart: unless-stopped
     volumes:
       - .deploy/docker/monitoring/config/prometheus:/etc/prometheus
-      - .deploy/docker/monitoring/data/prometheus:/prometheus
+      - prometheus_data:/prometheus
 
   grafana:
     image: grafana/grafana:11.1.1
