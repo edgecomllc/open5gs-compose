@@ -21,5 +21,5 @@ scrape_configs:
 
   - job_name: 'open5gs'
     static_configs:
-      - targets: ['mme:9090', 'smf:9090', 'upf:9090']
+      - targets: ['mme:9090', 'amf:9090', 'smf:9090', 'pcf:9090', 'upf:9090']
 
