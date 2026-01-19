@@ -3,3 +3,5 @@ local-data/
 backups/
 
 *.log
+
+.DS_Store
