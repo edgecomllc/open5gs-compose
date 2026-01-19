@@ -424,7 +424,7 @@ services:
       - 9091:9090
     restart: unless-stopped
     volumes:
-      - .deploy/docker/monitoring/config/prometheus:/etc/prometheus
+      - .deploy/docker/monitoring/prometheus:/etc/prometheus
       - prometheus_data:/prometheus
     networks:
       core-network:
@@ -439,5 +439,5 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=grafana
     volumes:
-      - .deploy/docker/monitoring/config/grafana/provisioning:/etc/grafana/provisioning
-      - .deploy/docker/monitoring/config/grafana/dashboards:/etc/grafana/dashboards
+      - .deploy/docker/monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - .deploy/docker/monitoring/grafana/dashboards:/etc/grafana/dashboards
