@@ -82,7 +82,7 @@ services:
     ports:
       - 36412:36412/sctp
       - 2123:2123/udp
-      - 9091:9090/tcp
+      - 9094:9090/tcp
     volumes:
       - .deploy/docker/mme.yaml:/opt/open5gs/etc/open5gs/mme.yaml
       - .deploy/docker/diameter/mme:/opt/open5gs/etc/diameter/mme
