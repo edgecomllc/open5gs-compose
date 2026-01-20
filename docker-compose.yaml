@@ -177,6 +177,8 @@ services:
         condition: service_healthy
     command:
       - open5gs-amfd
+    ports:
+      - 38412:38412/sctp
     volumes:
       - .deploy/docker/amf.yaml:/opt/open5gs/etc/open5gs/amf.yaml
     networks:
@@ -285,6 +287,7 @@ services:
     profiles: [4g-core, 5g-core]
     ports:
       - 9093:9090/tcp
+      - 2152:2152/udp
     volumes:
       - .deploy/docker/upf.yaml:/opt/open5gs/etc/open5gs/upf.yaml
     privileged: true
@@ -368,8 +371,8 @@ services:
       - amf
     environment:
       - MCC=999
-      - MNC=70
-      - TAC=001
+      - MNC=99
+      - TAC=009
       - SST=1
       - SD=0x111111
       - N2_IFACE=eth0

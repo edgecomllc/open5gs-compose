@@ -38,17 +38,17 @@ amf:
         set: 1
       plmn_id:
         mcc: "999"
-        mnc: "70"
+        mnc: "99"
   tai:
     - plmn_id:
         mcc: "999"
-        mnc: "70"
+        mnc: "99"
       tac:
-        - 1
+        - 9
   plmn_support:
     - plmn_id:
         mcc: "999"
-        mnc: "70"
+        mnc: "99"
       s_nssai:
         - sd: "0x111111"
           sst: 1

@@ -95,8 +95,8 @@ services:
     networks:
       core-network:
         ipv4_address: ${UPF_IP}
-    expose:
-      - "2152/udp"
+    ports:
+      - 2152:2152/udp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
 
@@ -124,15 +124,15 @@ services:
         tail -f /dev/null
 
 
-  smf:
-    image: ghcr.io/edgecomllc/spgw-c:87e59f0468594ca0852bfdce3420b13ff4093ab8
-    profiles: [4g-core, 5g-core]
-    command: ["/app/spgw-c"]
-    depends_on:
-      - upf
-    volumes:
-      - .deploy/docker/smfcfg.yaml:/app/config/smfcfg.yaml
-      - .deploy/docker/uerouting.yaml:/app/config/uerouting.yaml
-    networks:
-      core-network:
-        ipv4_address: ${SMF_IP}
+  # smf:
+  #   image: ghcr.io/edgecomllc/spgw-c:87e59f0468594ca0852bfdce3420b13ff4093ab8
+  #   profiles: [4g-core, 5g-core]
+  #   command: ["/app/spgw-c"]
+  #   depends_on:
+  #     - upf
+  #   volumes:
+  #     - .deploy/docker/smfcfg.yaml:/app/config/smfcfg.yaml
+  #     - .deploy/docker/uerouting.yaml:/app/config/uerouting.yaml
+  #   networks:
+  #     core-network:
+  #       ipv4_address: ${SMF_IP}
