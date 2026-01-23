@@ -21,9 +21,9 @@ smf:
   pfcp:
     server:
       - address: smf
-    # client:
-    #   upf:
-    #     - address: upf
+    client:
+      upf:
+        - address: upf
   gtpc:
     server:
       - address: smf
