@@ -84,6 +84,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    depends_on:
+      smf:
+        condition: service_healthy
     ports:
       - 36412:36412/sctp
       - 2123:2123/udp
@@ -272,6 +275,12 @@ services:
   smf:
     <<: *open5gs_svc_image
     profiles: [4g-core, 5g-core]
+    healthcheck:
+      test: curl http://smf:9090/ || exit 1
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
     depends_on:
       nrf:
         condition: service_healthy
