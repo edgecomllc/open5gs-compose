@@ -9,21 +9,21 @@ global:
 #    peer: 64
 
 smf:
-#  sbi:
-#    server:
-#      - address: 0.0.0.0
-#        port: 7777
-#    client:
-##      nrf:
-##        - uri: http://127.0.0.10:7777
-#      scp:
-#        - uri: http://127.0.0.200:7777
+  sbi:
+    server:
+      - dev: eth0
+        port: 7777
+    client:
+     nrf:
+       - uri: http://open5gs-nrf-sbi:7777
+    #  scp:
+    #    - uri: http://open5gs-nrf-sbi:7777
   pfcp:
     server:
       - address: smf
-    client:
-      upf:
-        - address: upf
+    # client:
+    #   upf:
+    #     - address: upf
   gtpc:
     server:
       - address: smf

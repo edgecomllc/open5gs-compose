@@ -272,6 +272,10 @@ services:
   smf:
     <<: *open5gs_svc_image
     profiles: [4g-core, 5g-core]
+    depends_on:
+      nrf:
+        condition: service_healthy
+        required: false
     command:
       - open5gs-smfd
     ports:

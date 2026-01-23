@@ -12,13 +12,14 @@ services:
       UPF_INTERFACE_NAME: eth0
       UPF_XDP_ATTACH_MODE: generic
       UPF_API_ADDRESS: ":8081"
+      UPF_METRICS_ADDRESS: ":9091"
       UPF_PFCP_ADDRESS: "localhost:8805"
+      UPF_PFCP_NODE_ID: "172.20.0.100"
       UPF_SXA_ADDRESS: "sgwu:8805"
       UPF_SXA_REMOTE_NODE: sgwc
       UPF_S1U_ADDRESS: ${SGWU_IP}
       UPF_S5S8_ADDRESS: ${SGWU_IP}
-      UPF_METRICS_ADDRESS: ":9091"
-      UPF_PFCP_NODE_ID: "172.20.0.100"
+      UPF_N3_ADDRESS: ${SGWU_IP}
       UPF_N9_ADDRESS: ${SGWU_IP}
       UPF_GTP_PEER: ${SRS_ENB_IP}:2152
       UPF_HUAWEI_SUPPORT: false
@@ -65,15 +66,16 @@ services:
       UPF_INTERFACE_NAME: eth0
       UPF_XDP_ATTACH_MODE: generic
       UPF_API_ADDRESS: ":8081"
-      UPF_PFCP_ADDRESS: "localhost:8805"
-      UPF_SXB_ADDRESS: "upf:8805"
-      UPF_SXB_REMOTE_NODE: 10.103.255.247
-      UPF_SXB_NODE_ID: 10.103.255.249
+      UPF_PFCP_ADDRESS: "upf:8805"
+      UPF_PFCP_REMOTE_NODE: "smf"
+      UPF_PFCP_NODE_ID: "eupf"
+      # UPF_SXB_ADDRESS: "upf:8805"
+      # UPF_SXB_REMOTE_NODE: smf
+      # UPF_SXB_NODE_ID: 10.103.255.249
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PA_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_PFCP_NODE_ID: "172.20.0.100"
-      UPF_N3_ADDRESS: "172.20.0.100"
+      UPF_N3_ADDRESS: ${UPF_IP}
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
     entrypoint: ""
