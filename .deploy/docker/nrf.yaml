@@ -11,7 +11,7 @@ nrf:
   serving: # 5G roaming requires PLMN in NRF
   - plmn_id:
       mcc: 999
-      mnc: 70
+      mnc: 99
   sbi:
     server:
     - dev: "eth0"

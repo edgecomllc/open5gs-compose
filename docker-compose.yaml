@@ -64,7 +64,7 @@ services:
       - |
         #open5gs-dbctl add_ue_with_apn 999991234567896 465B5CE8B199B49FAA5F0A2EE238A6BC E8ED289DEBA952E4283B54E88E6183CA internet
         #open5gs-dbctl add_ue_with_apn ${UE1_IMSI} ${UE1_KI} ${UE1_OP} internet
-        while IFS=, read -r imsi ki op; do echo "add imsi $$imsi $$ki:$$op"; open5gs-dbctl add_ue_with_apn $$imsi $$ki $$op internet; done < /opt/open5gs/ue.list
+        while IFS=, read -r imsi ki op; do echo "add imsi $$imsi $$ki:$$op"; open5gs-dbctl add_ue_with_slice $$imsi $$ki $$op internet 1 111111; done < /opt/open5gs/ue.list
         tail -f /dev/null
     environment:
       <<: *open5gs_svc_envs
@@ -80,10 +80,14 @@ services:
     privileged: true
     command: open5gs-mmed
     healthcheck:
-      test: ["CMD-SHELL", "apt update && apt install -y ethtool && ethtool --offload eth0 tx off"]
+      test: curl http://mme:9090/ || exit 1
       interval: 10s
       timeout: 5s
       retries: 5
+<<<<<<< HEAD
+=======
+      start_period: 2s
+>>>>>>> ac8190b (refactor)
     depends_on:
       smf:
         condition: service_healthy
@@ -171,6 +175,14 @@ services:
       core-network:
         aliases:
           - open5gs-nrf-sbi
+
+  init-net:
+    image: nicolaka/netshoot
+    profiles: [fix-tx-offload]
+    cap_add:
+      - NET_ADMIN
+    command: "ethtool --offload eth0 tx off"
+    network_mode: "service:amf"
 
   amf:
     <<: *open5gs_svc_image
@@ -277,7 +289,11 @@ services:
     profiles: [4g-core, 5g-core]
     healthcheck:
       test: curl http://smf:9090/ || exit 1
+<<<<<<< HEAD
       interval: 5s
+=======
+      interval: 2s
+>>>>>>> ac8190b (refactor)
       timeout: 2s
       retries: 5
       start_period: 2s
@@ -394,11 +410,11 @@ services:
       - AMF_HOSTNAME=amf
     command: gnb
     healthcheck:
-      test: "nr-cli UERANSIM-gnb-999-70-16 -e status | grep -q 'is-ngap-up: true'"
+      test: "nr-cli UERANSIM-gnb-999-99-16 -e status | grep -q 'is-ngap-up: true'"
       interval: 2s
       timeout: 2s
       retries: 5
-      start_period: 2s
+      start_period: 12s
     networks:
       core-network:
 
@@ -407,13 +423,11 @@ services:
     profiles: [5g-ran]
     <<: *container_defaults
     depends_on:
-      populate:
-        condition: service_completed_successfully
       gnb:
         condition: service_healthy
     environment:
       - MCC=999
-      - MNC=70
+      - MNC=99
       - MSISDN=0000000001
       - KEY=465B5CE8B199B49FAA5F0A2EE238A6BC
       - OP=E8ED289DEBA952E4283B54E88E6183CA
