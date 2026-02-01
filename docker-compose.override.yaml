@@ -3,7 +3,8 @@ services:
   sgwu:
     #image: ghcr.io/edgecomllc/eupf-dev:4fb2b5fd105fc4e33ff1cc5a581cb80dcaae334d
     #image: ghcr.io/edgecomllc/eupf-dev:fa80bd677232f6a3e0ceb2dcd015e481c696f3f7
-    image: ghcr.io/edgecomllc/eupf-dev:1f04e6d796abacec6e00e9cd241cd3cfdf7ee1f8
+    #image: ghcr.io/edgecomllc/eupf-dev:1f04e6d796abacec6e00e9cd241cd3cfdf7ee1f8
+    image: ghcr.io/edgecomllc/eupf-dev:94258a4a5fd11c200d855c1f1ffae7aac92d5d66
     profiles: [4g-core]
     privileged: true
     volumes:
@@ -81,7 +82,6 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PA_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-#      UPF_N3_ADDRESS: ${UPF_IP}
       UPF_N3_ADDRESS: 9.8.7.6
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug

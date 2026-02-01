@@ -84,10 +84,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-<<<<<<< HEAD
-=======
       start_period: 2s
->>>>>>> ac8190b (refactor)
     depends_on:
       smf:
         condition: service_healthy
@@ -289,11 +286,7 @@ services:
     profiles: [4g-core, 5g-core]
     healthcheck:
       test: curl http://smf:9090/ || exit 1
-<<<<<<< HEAD
       interval: 5s
-=======
-      interval: 2s
->>>>>>> ac8190b (refactor)
       timeout: 2s
       retries: 5
       start_period: 2s
