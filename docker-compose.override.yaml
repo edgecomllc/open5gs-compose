@@ -21,9 +21,9 @@ services:
       UPF_SXA_ADDRESS: "sgwu:8805"
       UPF_SXA_REMOTE_NODE: sgwc
 #      UPF_S1U_ADDRESS: ${SGWU_IP}
-      UPF_S1U_ADDRESS: 4.3.2.1
+      UPF_S1U_ADDRESS: 10.0.0.60
       UPF_S5S8_ADDRESS: ${SGWU_IP}
-      UPF_N3_ADDRESS: ${SGWU_IP}
+      UPF_N3_ADDRESS: 10.0.0.60
       UPF_N9_ADDRESS: ${SGWU_IP}
       UPF_GTP_PEER: ${SRS_ENB_IP}:2152
       UPF_HUAWEI_SUPPORT: false
@@ -82,10 +82,10 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PA_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_N3_ADDRESS: 9.8.7.6
+      UPF_N3_ADDRESS: 10.0.1.70
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
-      UPF_FEATURE_FTUP: true
+      UPF_FEATURE_FTUP: false
     entrypoint: ""
     command:
       - /bin/sh
