@@ -4,26 +4,29 @@ services:
     #image: ghcr.io/edgecomllc/eupf-dev:4fb2b5fd105fc4e33ff1cc5a581cb80dcaae334d
     #image: ghcr.io/edgecomllc/eupf-dev:fa80bd677232f6a3e0ceb2dcd015e481c696f3f7
     #image: ghcr.io/edgecomllc/eupf-dev:1f04e6d796abacec6e00e9cd241cd3cfdf7ee1f8
-    image: ghcr.io/edgecomllc/eupf-dev:94258a4a5fd11c200d855c1f1ffae7aac92d5d66
+    #image: ghcr.io/edgecomllc/eupf-dev:94258a4a5fd11c200d855c1f1ffae7aac92d5d66
+    image: ghcr.io/edgecomllc/eupf-dev:344a1d079299cbd9710ad537c4709f3d0c242d45
     profiles: [4g-core]
     privileged: true
     volumes:
       - /sys/fs/bpf:/sys/fs/bpf
-      - ./dumps:/dumps
+      - ./dumps/sgwu:/dumps
     environment:
       GIN_MODE: release
       UPF_INTERFACE_NAME: eth0
       UPF_XDP_ATTACH_MODE: generic
       UPF_API_ADDRESS: ":8081"
       UPF_METRICS_ADDRESS: ":9091"
-      UPF_PFCP_ADDRESS: "localhost:8805"
-      UPF_PFCP_NODE_ID: "172.20.0.100"
-      UPF_SXA_ADDRESS: "sgwu:8805"
-      UPF_SXA_REMOTE_NODE: sgwc
-#      UPF_S1U_ADDRESS: ${SGWU_IP}
-      UPF_S1U_ADDRESS: 10.0.0.60
-      UPF_S5S8_ADDRESS: ${SGWU_IP}
-      UPF_N3_ADDRESS: 10.0.0.60
+      UPF_PFCP_ADDRESS: "sgwu:8805"
+      UPF_PFCP_REMOTE_NODE: sgwc
+      UPF_PFCP_NODE_ID: "sgwu"
+#      UPF_SXA_ADDRESS: "sgwu:8805"
+#      UPF_SXA_REMOTE_NODE: sgwc
+#      UPF_S1U_ADDRESS: 10.0.0.60
+#      UPF_S5S8_ADDRESS: ${SGWU_IP}
+      UPF_N3_ADV_ADDRESS: 10.0.0.60
+      UPF_N3_ADDRESS: ${SGWU_IP}
+      UPF_N9_ADV_ADDRESS: ${SGWU_IP}
       UPF_N9_ADDRESS: ${SGWU_IP}
       UPF_GTP_PEER: ${SRS_ENB_IP}:2152
       UPF_HUAWEI_SUPPORT: false
@@ -34,7 +37,7 @@ services:
       - /bin/sh
       - -c
       - |
-        ping -c 1 upf
+        ping -c 5 upf
         /app/bin/eupf
     ulimits:
       memlock: -1
@@ -62,12 +65,13 @@ services:
   upf:
     #image: ghcr.io/edgecomllc/eupf-dev:4fb2b5fd105fc4e33ff1cc5a581cb80dcaae334d
     #image: ghcr.io/edgecomllc/eupf-dev:fa80bd677232f6a3e0ceb2dcd015e481c696f3f7
-    image: ghcr.io/edgecomllc/eupf-dev:1f04e6d796abacec6e00e9cd241cd3cfdf7ee1f8
+    #image: ghcr.io/edgecomllc/eupf-dev:1f04e6d796abacec6e00e9cd241cd3cfdf7ee1f8
+    image: ghcr.io/edgecomllc/eupf-dev:344a1d079299cbd9710ad537c4709f3d0c242d45
     profiles: [4g-core, 5g-core]
     privileged: true
     volumes:
       - /sys/fs/bpf:/sys/fs/bpf
-      - ./dumps:/dumps
+      - ./dumps/upf:/dumps
     environment:
       GIN_MODE: release
       UPF_INTERFACE_NAME: eth0
@@ -82,7 +86,8 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PA_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_N3_ADDRESS: 10.0.1.70
+      UPF_N3_ADDRESS: ${UPF_IP}
+      UPF_N3_ADV_ADDRESS: 10.0.0.70
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
       UPF_FEATURE_FTUP: false
@@ -92,6 +97,7 @@ services:
       - -c
       - |
         apk add tcpdump
+        ping -c 5 nat
         mkdir -p /etc/iproute2
         echo "1200 n6if" >> /etc/iproute2/rt_tables
         ip rule add from 10.167.71.192/26 table n6if
@@ -111,7 +117,6 @@ services:
       - net.ipv4.conf.all.forwarding=1
 
 
-
   nat:
     image: wbitt/network-multitool:alpine-minimal
     profiles: [4g-core, 5g-core]
@@ -128,6 +133,7 @@ services:
       - /bin/sh
       - -c
       - |
+        ping -c 5 upf
         iptables -t nat -A POSTROUTING -s 10.167.71.192/26 -o eth0 -j MASQUERADE
         iptables -A FORWARD -j ACCEPT
         ip route add 10.167.71.192/26 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
