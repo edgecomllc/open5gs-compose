@@ -74,6 +74,14 @@ services:
       core-network:
 
 # 4G specific services
+  mme-init-net:
+    image: nicolaka/netshoot
+    profiles: [4g-fix-tx-offload]
+    cap_add:
+      - NET_ADMIN
+    command: "ethtool --offload eth0 tx off"
+    network_mode: "service:mme"
+
   mme:
     <<: *open5gs_svc_image
     profiles: [4g-core]
@@ -173,9 +181,9 @@ services:
         aliases:
           - open5gs-nrf-sbi
 
-  init-net:
+  amf-init-net:
     image: nicolaka/netshoot
-    profiles: [fix-tx-offload]
+    profiles: [5g-fix-tx-offload]
     cap_add:
       - NET_ADMIN
     command: "ethtool --offload eth0 tx off"
@@ -339,7 +347,7 @@ services:
 # 4G RAN test services
   srsenb_zmq:
     profiles: [4g-ran]
-    build: ./srslte
+    build: .deploy/docker/srslte
     container_name: srsenb_zmq
     stdin_open: true
     tty: true
@@ -362,7 +370,7 @@ services:
 
   srsue_zmq:
     profiles: [4g-ran]
-    build: ./srslte
+    build: .deploy/docker/srslte
     container_name: srsue_zmq
     stdin_open: true
     tty: true
