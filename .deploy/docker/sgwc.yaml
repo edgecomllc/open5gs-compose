@@ -17,4 +17,4 @@ sgwc:
       - address: sgwc
     client:
       sgwu:
-        - address: sgwu
+        - address: upf

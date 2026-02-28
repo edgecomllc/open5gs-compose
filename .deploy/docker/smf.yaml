@@ -22,8 +22,8 @@ smf:
     server:
       - address: smf
     client:
-      # upf:
-      #   - address: upf
+      upf:
+        - address: upf
   gtpc:
     server:
       - address: smf
