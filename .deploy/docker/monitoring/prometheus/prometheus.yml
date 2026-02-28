@@ -23,3 +23,6 @@ scrape_configs:
     static_configs:
       - targets: ['mme:9090', 'amf:9090', 'smf:9090', 'pcf:9090', 'upf:9090']
 
+  - job_name: 'edgecom'
+    static_configs:
+      - targets: ['sgwu:9091', 'upf:9091', 'upf:9100']

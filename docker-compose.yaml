@@ -448,6 +448,22 @@ services:
 
 # Monitoring
 
+  node_exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: node_exporter
+    command:
+      - '--collector.disable-defaults'
+      - '--collector.netdev'
+      - '--collector.ethtool'
+      - '--collector.arp'
+    restart: unless-stopped
+      #volumes:
+      #  - '/:/host:ro,rslave'
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: "service:upf"
+
   prometheus:
     image: prom/prometheus:v2.53.1
     container_name: prometheus
@@ -476,3 +492,54 @@ services:
       - .deploy/docker/monitoring/grafana/dashboards:/etc/grafana/dashboards
     networks:
       core-network:
+
+# Speed test
+
+  speedtest-init-net:
+    image: nicolaka/netshoot
+    profiles: [speedtest]
+    cap_add:
+      - NET_ADMIN
+    command: "ethtool --offload eth0 tx off"
+    network_mode: "service:speedtest"
+
+  speedtest:
+    profiles: [speedtest]
+    container_name: speedtest
+    image: ghcr.io/librespeed/speedtest:latest
+    restart: always
+    environment:
+      MODE: standalone
+      #TITLE: "LibreSpeed"
+      #TELEMETRY: "false"
+      #ENABLE_ID_OBFUSCATION: "false"
+      #REDACT_IP_ADDRESSES: "false"
+      #PASSWORD:
+      #EMAIL:
+      #DISABLE_IPINFO: "false"
+      #IPINFO_APIKEY: "your api key"
+      #DISTANCE: "km"
+      #WEBPORT: 8080
+    ports:
+      - "8181:8080" # webport mapping (host:container)
+
+
+  iperf-init-net:
+    image: nicolaka/netshoot
+    profiles: [iperf]
+    cap_add:
+      - NET_ADMIN
+    command: "ethtool --offload eth0 tx off"
+    network_mode: "service:iperf3"
+
+  iperf3:
+    image: networkstatic/iperf3:latest
+    profiles: [iperf]
+    container_name: iperf3
+    restart: unless-stopped
+    ports:
+      - '5201:5201/tcp'
+      - '5201:5201/udp'
+    command: -s
+    stdin_open: true
+    tty: true

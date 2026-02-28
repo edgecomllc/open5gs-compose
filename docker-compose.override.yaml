@@ -21,7 +21,7 @@ services:
       UPF_N3_ADDRESS: ${SGWU_IP}
       UPF_N9_ADV_ADDRESS: ${SGWU_IP}
       UPF_N9_ADDRESS: ${SGWU_IP}
-      UPF_GTP_PEER: "10.0.0.210:2152 ${SRS_ENB_IP}:2152"
+      UPF_GTP_PEER: 10.0.0.210:2152
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
       UPF_FEATURE_FTUP: true
