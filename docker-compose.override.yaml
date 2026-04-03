@@ -8,7 +8,8 @@ services:
   upf:
     #image: ghcr.io/edgecomllc/eupf-dev:623857f74497041465ddd80e1d5038fc1f3d1c17
     #image: ghcr.io/edgecomllc/eupf-dev:7c67d925c78a7d4f61fcd4eba6c0046b2de28a93
-    image: ghcr.io/edgecomllc/eupf-dev:31e000bd1d7857bb3437196e6a4a2dd155a4c349
+    #image: ghcr.io/edgecomllc/eupf-dev:31e000bd1d7857bb3437196e6a4a2dd155a4c349
+    image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane
     profiles: [4g-core, 5g-core]
     privileged: true
     volumes:
@@ -22,11 +23,13 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PFCP_ADDRESS: "upf:8805"
       UPF_PFCP_NODE_ID: "eupf"
-      UPF_N3_ADV_ADDRESS: 10.0.0.60
-        #UPF_N3_ADDRESS: ${UPF_IP}
-      UPF_N3_ADDRESS: 10.0.0.60
+        #UPF_N3_ADV_ADDRESS: 10.0.0.60
+      UPF_N3_ADV_ADDRESS: 11.131.226.142
+      UPF_N3_ADDRESS: ${UPF_IP}
+        #UPF_N3_ADDRESS: 10.0.0.60
+      UPF_N9_ADDRESS: 11.131.226.142
       UPF_N9_ADV_ADDRESS: ${UPF_IP}
-      UPF_N9_ADDRESS: ${UPF_IP}
+        #UPF_N9_ADDRESS: ${UPF_IP}
       UPF_GTP_PEER: 10.0.0.210:2152
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
@@ -54,6 +57,7 @@ services:
     ports:
       - 10.0.0.60:2152:2152/udp
       - 10.0.1.70:2152:2152/udp
+      - 11.131.226.142:2152:2152/udp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
 

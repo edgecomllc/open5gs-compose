@@ -44,14 +44,16 @@ amf:
         mcc: "999"
         mnc: "99"
       tac:
-        - 9
+        - 15099 #0x3afb #9
   plmn_support:
     - plmn_id:
         mcc: "999"
         mnc: "99"
       s_nssai:
-        - sd: "0x111111"
+        - sd:  ffffff #"16777215"
           sst: 1
+            #        - sd: "0x111111"
+            #          sst: 1
         - sd: "0x222222"
           sst: 1
         - sd: "0x333333"
@@ -67,4 +69,6 @@ amf:
 
   security:
     integrity_order : [ NIA2, NIA1, NIA0 ]
+    #integrity_order : [ NIA0, NIA1, NIA2 ]
+    #ciphering_order : [ NEA2, NEA1, NEA0 ]
     ciphering_order : [ NEA0, NEA1, NEA2 ]
