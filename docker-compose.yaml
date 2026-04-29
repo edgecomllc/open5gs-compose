@@ -2,7 +2,7 @@ x-container-defaults: &container_defaults
   restart: unless-stopped
 
 x-open5gs-svc-image: &open5gs_svc_image
-  image: docker.io/gradiant/open5gs:2.7.1
+  image: docker.io/gradiant/open5gs:2.7.7
   <<: *container_defaults
 
 x-open5gs-svc-envs: &open5gs_svc_envs
@@ -40,7 +40,7 @@ services:
       core-network:
 
   webui:
-    image: gradiant/open5gs-webui:2.7.1
+    image: gradiant/open5gs-webui:2.7.5
     restart: unless-stopped
     depends_on:
       mongodb:
@@ -317,7 +317,7 @@ services:
     profiles: [4g-core, 5g-core]
     ports:
       - 9093:9090/tcp
-      - 10.0.1.70:2152:2152/udp
+#      - 10.0.1.70:2152:2152/udp
     volumes:
       - .deploy/docker/upf.yaml:/opt/open5gs/etc/open5gs/upf.yaml
     privileged: true
@@ -464,6 +464,22 @@ services:
       - NET_RAW
     network_mode: "service:upf"
 
+  node_exporter_system:
+    image: prom/node-exporter:v1.10.2
+    container_name: node_exporter_system
+    command:
+      - '--path.rootfs=/host'
+      - '--web.listen-address=:9101'
+      - '--collector.interrupts'
+      - '--collector.softirqs'
+    restart: unless-stopped
+    volumes:
+      - '/:/host:ro,rslave'
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: host
+
   prometheus:
     image: prom/prometheus:v2.53.1
     container_name: prometheus
@@ -477,6 +493,8 @@ services:
       - prometheus_data:/prometheus
     networks:
       core-network:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   grafana:
     image: grafana/grafana:11.1.1
