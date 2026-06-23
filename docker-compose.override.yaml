@@ -23,7 +23,8 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PFCP_ADDRESS: "upf:8805"
       UPF_PFCP_NODE_ID: "upf"
-      UPF_N3_ADV_ADDRESS: 10.0.0.60
+        #UPF_N3_ADV_ADDRESS: 10.0.0.60
+      UPF_N3_ADV_ADDRESS: 11.131.226.142
       UPF_N3_ADV_ADDRESS_5G: 11.131.226.142
       UPF_N3_ADDRESS: ${UPF_IP}
         #UPF_N3_ADDRESS: 10.0.0.60
@@ -56,7 +57,7 @@ services:
       core-network:
         ipv4_address: ${UPF_IP}
     ports:
-      - 10.0.0.60:2152:2152/udp
+      #- 10.0.0.60:2152:2152/udp
       - 11.131.226.142:2152:2152/udp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
