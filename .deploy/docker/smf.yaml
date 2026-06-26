@@ -5,7 +5,7 @@ logger:
 
 global:
   max:
-    ue: 32  # The number of UE can be increased depending on memory size.
+    ue: 250  # The number of UE can be increased depending on memory size.
 #    peer: 64
 
 smf:
@@ -35,7 +35,7 @@ smf:
       - address: 0.0.0.0
         port: 9090
   session:
-    - subnet: 10.167.71.192/26
+    - subnet: 10.167.71.192/24
       gateway: 10.167.71.193
   dns:
     - 8.8.8.8
