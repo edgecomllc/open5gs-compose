@@ -41,9 +41,6 @@ smf:
     - 8.8.8.8
     - 1.1.1.1
   mtu: 1400
-#  p-cscf:
-#    - 127.0.0.1
-#    - ::1
-#  ctf:
-#    enabled: auto   # auto(default)|yes|no
+  p-cscf:
+    - 192.168.10.100
   freeDiameter: /opt/open5gs/etc/diameter/smf/smf.conf
