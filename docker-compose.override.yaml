@@ -131,3 +131,23 @@ services:
   #   networks:
   #     core-network:
   #       ipv4_address: ${SMF_IP}
+  #
+
+  sip-registrar:
+    profiles: [ims]
+    build:
+      context: ./ims
+      dockerfile: Dockerfile
+    container_name: ims-registrar
+      #hostname: registrar.ims.example.com
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"      # SIP UDP
+      - "5060:5060/tcp"      # SIP TCP
+        #- "5061:5061/tcp"      # SIP TLS (опционально)
+    environment:
+      - DOMAIN=ims.example.com
+      - LOG_LEVEL=info
+      - PYTHONUNBUFFERED=1
+        #volumes:
+        #- ./logs:/app/logs
