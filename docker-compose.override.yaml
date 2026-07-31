@@ -6,10 +6,9 @@ services:
     ports: !reset []
 
   upf:
-    #image: ghcr.io/edgecomllc/eupf-dev:623857f74497041465ddd80e1d5038fc1f3d1c17
-    #image: ghcr.io/edgecomllc/eupf-dev:7c67d925c78a7d4f61fcd4eba6c0046b2de28a93
-    #image: ghcr.io/edgecomllc/eupf-dev:31e000bd1d7857bb3437196e6a4a2dd155a4c349
+    # In order to download eupf image from eupf-dev registry use docker login with appropriate credentials first
     image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane
+    #image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane-no-gtp-ext
     profiles: [4g-core, 5g-core]
     privileged: true
     volumes:
@@ -24,7 +23,7 @@ services:
       UPF_PFCP_ADDRESS: "upf:8805"
       UPF_PFCP_NODE_ID: "upf"
         #UPF_N3_ADV_ADDRESS: 10.0.0.60
-      UPF_N3_ADV_ADDRESS: 11.131.226.142
+      UPF_N3_ADV_ADDRESS: 11.131.226.162
       UPF_N3_ADV_ADDRESS_5G: 11.131.226.142
       UPF_N3_ADDRESS: ${UPF_IP}
         #UPF_N3_ADDRESS: 10.0.0.60
@@ -32,7 +31,8 @@ services:
         #UPF_N9_ADDRESS: 10.0.0.60
       UPF_N9_ADV_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_GTP_PEER: 10.0.0.210:2152
+      UPF_GTP_PEER: 11.131.226.141:2152,11.131.218.66:2152,10.0.0.150:2152
+        #UPF_GTP_PEER: 11.131.226.141:2152,10.0.0.210:2152
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
       UPF_FEATURE_FTUP: true
@@ -45,7 +45,7 @@ services:
         ping -c 5 nat
         mkdir -p /etc/iproute2
         echo "1200 n6if" >> /etc/iproute2/rt_tables
-        ip rule add from 10.167.71.192/26 table n6if
+        ip rule add from 10.167.71.0/24 table n6if
         ip route add default via `nslookup nat | awk '/^Address: / { print $2 }'` dev eth0 table n6if
         /app/bin/eupf
     ulimits:
@@ -57,8 +57,7 @@ services:
       core-network:
         ipv4_address: ${UPF_IP}
     ports:
-      #- 10.0.0.60:2152:2152/udp
-      - 11.131.226.142:2152:2152/udp
+      - 2152:2152/udp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
 
@@ -71,55 +70,6 @@ services:
       - ./backups:/var/lib/eupf/backups
     networks:
       core-network:
-
-  # upf:
-  #   #image: ghcr.io/edgecomllc/eupf-dev:344a1d079299cbd9710ad537c4709f3d0c242d45
-  #   image: ghcr.io/edgecomllc/eupf-dev:623857f74497041465ddd80e1d5038fc1f3d1c17
-  #   profiles: [4g-core, 5g-core]
-  #   privileged: true
-  #   volumes:
-  #     - /sys/fs/bpf:/sys/fs/bpf
-  #     - ./dumps/upf:/dumps
-  #   environment:
-  #     GIN_MODE: release
-  #     UPF_INTERFACE_NAME: eth0
-  #     UPF_XDP_ATTACH_MODE: native
-  #     UPF_API_ADDRESS: ":8081"
-  #     UPF_PFCP_ADDRESS: "upf:8805"
-  #     UPF_PFCP_REMOTE_NODE: "smf"
-  #     UPF_PFCP_NODE_ID: "eupf"
-  #     UPF_METRICS_ADDRESS: ":9091"
-  #     UPF_PA_ADDRESS: ${UPF_IP}
-  #     UPF_N9_ADDRESS: ${UPF_IP}
-  #     UPF_N3_ADDRESS: ${UPF_IP}
-  #     UPF_N3_ADV_ADDRESS: 10.0.0.70
-  #     UPF_HUAWEI_SUPPORT: false
-  #     UPF_LOGGING_LEVEL: debug
-  #     UPF_FEATURE_FTUP: false
-  #   entrypoint: ""
-  #   command:
-  #     - /bin/sh
-  #     - -c
-  #     - |
-  #       apk add tcpdump
-  #       ping -c 5 nat
-  #       mkdir -p /etc/iproute2
-  #       echo "1200 n6if" >> /etc/iproute2/rt_tables
-  #       ip rule add from 10.167.71.192/26 table n6if
-  #       ip route add default via `nslookup nat | awk '/^Address: / { print $2 }'` dev eth0 table n6if
-  #       /app/bin/eupf
-  #   ulimits:
-  #     memlock: -1
-  #   cap_add:
-  #     - NET_ADMIN
-  #     - SYS_ADMIN
-  #   networks:
-  #     core-network:
-  #       ipv4_address: ${UPF_IP}
-  #   ports:
-  #     - 10.0.1.70:2152:2152/udp
-  #   sysctls:
-  #     - net.ipv4.conf.all.forwarding=1
 
   blackbox_exporter:
     image: prom/blackbox-exporter:v0.28.0
@@ -150,9 +100,9 @@ services:
       - -c
       - |
         ping -c 5 upf
-        iptables -t nat -A POSTROUTING -s 10.167.71.192/26 -o eth0 -j MASQUERADE
+        iptables -t nat -A POSTROUTING -s 10.167.71.0/24 -o eth0 -j MASQUERADE
         iptables -A FORWARD -j ACCEPT
-        ip route add 10.167.71.192/26 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
+        ip route add 10.167.71.0/24 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
         tail -f /dev/null
 
 
