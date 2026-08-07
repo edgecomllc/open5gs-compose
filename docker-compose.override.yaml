@@ -10,12 +10,17 @@ services:
     profiles: [4g-core, 5g-core]
     network_mode: host
     privileged: true
+    restart: unless-stopped
+    depends_on:
+      upf:
+        condition: service_healthy
     entrypoint: ""
     command:
       - /bin/sh
       - -c
       - |
         ip l sh | grep veth | awk '{print $2}' | awk -F@ '{print $1}' | xargs -I {} ip link set dev {} xdp obj /app/zeroentrypoint_bpf.o sec xdp/upf_zero_entrypoint
+        while sleep 1; do wget -qO /dev/null http://localhost:8081/api/v1/health || break; done
 
   upf:
     # In order to download eupf image from eupf-dev registry use docker login with appropriate credentials first
@@ -23,6 +28,7 @@ services:
     #image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane-no-gtp-ext
     profiles: [4g-core, 5g-core]
     privileged: true
+    restart: unless-stopped
     volumes:
       - /sys/fs/bpf:/sys/fs/bpf
       - ./dumps/sgwu:/dumps
@@ -60,6 +66,12 @@ services:
         ip rule add from 10.167.71.0/24 table n6if
         ip route add default via `nslookup nat | awk '/^Address: / { print $2 }'` dev eth0 table n6if
         /app/bin/eupf
+    healthcheck:
+      test: wget -qO /dev/null http://localhost:8081/api/v1/health || exit 1
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
     ulimits:
       memlock: -1
     cap_add:
@@ -70,11 +82,12 @@ services:
         ipv4_address: ${UPF_IP}
     ports:
       - 2152:2152/udp
+      - 8081:8081/tcp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
-    depends_on:
-      - upf-init
-      - nat
+#    depends_on:
+#      - upf-init
+#      - nat
 
   eupf-cli:
     profiles: [edgecom]
@@ -99,6 +112,7 @@ services:
   nat:
     image: wbitt/network-multitool:alpine-minimal
     profiles: [4g-core, 5g-core]
+    restart: unless-stopped
     sysctls:
       - net.ipv4.conf.all.forwarding=1
     cap_add:
@@ -117,7 +131,7 @@ services:
         iptables -t nat -A POSTROUTING -s 10.167.71.0/24 ! -d 10.167.71.0/24 -o eth0 -j MASQUERADE
         iptables -A FORWARD -j ACCEPT
         ip route add 10.167.71.0/24 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
-        tail -f /dev/null
+        ping upf
 
 
   # smf:
