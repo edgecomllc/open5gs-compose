@@ -1,21 +1,15 @@
 logger:
   level: info
 parameter: {}
-
-global:
-# max:
-#   ue: 1024 # The number of UE can be increased depending on memory size.
-#    peer: 64
-
 pcf:
   sbi:
     server:
-    - dev: eth0
-      port: 7777
+      - dev: eth0
+        port: 7777
     client:
       nrf:
         - uri: http://open5gs-nrf-sbi:7777
   metrics:
     server:
-    - dev: eth0
-      port: 9090
+      - address: 0.0.0.0
+        port: 9090

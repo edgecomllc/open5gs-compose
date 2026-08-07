@@ -1,13 +1,8 @@
 logger:
-#  file:
-#    path: @localstatedir@/log/open5gs/sgwc.log
-  level: info   # fatal|error|warn|info(default)|debug|trace
-
+  level: info
 global:
   max:
-    ue: 32  # The number of UE can be increased depending on memory size.
-#    peer: 64
-
+    ue: 32
 sgwc:
   gtpc:
     server:
