@@ -19,6 +19,14 @@ services:
       - /bin/sh
       - -c
       - |
+        sleep 5
+        ip route add 10.10.145.96/28 via 10.103.255.249 2>/dev/null
+        ip route add 10.10.145.112/28 via 10.103.255.249 2>/dev/null
+        ip route add 10.10.145.128/28 via 10.103.255.249 2>/dev/null
+        nft insert rule ip filter DOCKER iifname "enp2s0f0.300" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+        nft insert rule ip filter DOCKER iifname "enp2s0f0.301" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+        nft insert rule ip filter DOCKER iifname "enp2s0f0.302" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+
         ip l sh | grep veth | awk '{print $2}' | awk -F@ '{print $1}' | xargs -I {} ip link set dev {} xdp obj /app/zeroentrypoint_bpf.o sec xdp/upf_zero_entrypoint
         while sleep 1; do wget -qO /dev/null http://localhost:8081/api/v1/health || break; done
 
@@ -40,17 +48,11 @@ services:
       UPF_METRICS_ADDRESS: ":9091"
       UPF_PFCP_ADDRESS: "upf:8805"
       UPF_PFCP_NODE_ID: "upf"
-        #UPF_N3_ADV_ADDRESS: 10.0.0.60
-      UPF_N3_ADV_ADDRESS: 11.131.226.162
-      UPF_N3_ADV_ADDRESS_5G: 11.131.226.142
+      UPF_N3_ADV_ADDRESS: 10.18.2.2
       UPF_N3_ADDRESS: ${UPF_IP}
-        #UPF_N3_ADDRESS: 10.0.0.60
-        #UPF_N9_ADDRESS: 11.131.226.142
-        #UPF_N9_ADDRESS: 10.0.0.60
       UPF_N9_ADV_ADDRESS: ${UPF_IP}
       UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_GTP_PEER: 11.131.226.141:2152,11.131.218.66:2152,10.0.0.150:2152
-        #UPF_GTP_PEER: 11.131.226.141:2152,10.0.0.210:2152
+      UPF_GTP_PEER: 10.60.134.1:2152,10.60.134.5:2152,10.60.134.9:2152,10.60.134.13:2152
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
       UPF_FEATURE_FTUP: true
@@ -62,9 +64,15 @@ services:
         apk add tcpdump
         ping -c 5 nat
         mkdir -p /etc/iproute2
-        echo "1200 n6if" >> /etc/iproute2/rt_tables
-        ip rule add from 10.167.71.0/24 table n6if
-        ip route add default via `nslookup nat | awk '/^Address: / { print $2 }'` dev eth0 table n6if
+        echo "1200 video" >> /etc/iproute2/rt_tables
+        ip rule add from  10.10.145.128/28 table video
+        ip route add default via 10.10.145.62 dev eth0 table video
+        echo "1300 telemetry" >> /etc/iproute2/rt_tables
+        ip rule add from 10.10.145.112/28 table telemetry
+        ip route add default via 10.10.145.54 dev eth0 table telemery
+        echo "1400 poc" >> /etc/iproute2/rt_tables
+        ip rule add from  10.10.145.96/28 table poc
+        ip route add default via 10.10.145.46 dev eth0 table poc
         /app/bin/eupf
     healthcheck:
       test: wget -qO /dev/null http://localhost:8081/api/v1/health || exit 1
@@ -166,3 +174,26 @@ services:
       - PYTHONUNBUFFERED=1
         #volumes:
         #- ./logs:/app/logs
+
+  privatebox-ui:
+    profiles: [ui]
+    image: privatebox-ui:1.0.2
+    container_name: privatebox-ui
+    tty: true
+    stdin_open: true
+    environment:
+      TERM: xterm-256color
+      PRIVATEBOX_AMF_URL: ${PRIVATEBOX_AMF_URL:-http://127.0.0.5:9090}
+      PRIVATEBOX_SMF_URL: ${PRIVATEBOX_SMF_URL:-http://127.0.0.4:9090}
+      PRIVATEBOX_MME_URL: ${PRIVATEBOX_MME_URL:-http://127.0.0.2:9090}
+      PRIVATEBOX_REFRESH: ${PRIVATEBOX_REFRESH:-5s}
+      PRIVATEBOX_TIMEOUT: ${PRIVATEBOX_TIMEOUT:-3s}
+      PRIVATEBOX_MOCK: ${PRIVATEBOX_MOCK:-false}
+    entrypoint: ""
+    command:
+      - /bin/sh
+      - -c
+      - sleep infinity
+    networks:
+      core-network:
+
