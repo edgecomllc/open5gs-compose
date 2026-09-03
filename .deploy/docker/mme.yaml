@@ -2,7 +2,9 @@ logger:
   level: info
 global:
   max:
-    ue: 32
+    ue: 250
+  parameter:    
+    fake_csfb: true
 mme:
   freeDiameter: /opt/open5gs/etc/diameter/mme/mme.conf
   s1ap:
@@ -32,7 +34,7 @@ mme:
     - plmn_id:
         mcc: 999
         mnc: 99
-      tac: 9
+      tac: 11004
   security:
     integrity_order:
       - EIA2
@@ -43,9 +45,9 @@ mme:
       - EEA1
       - EEA2
   network_name:
-    full: Dacha
-    short: Dacha
-  mme_name: box1-mme0
+    full: Segeza
+    short: sgz
+  mme_name: segeza-mme0
   access_control:
     default_reject_cause: 11
     plmn_id:
