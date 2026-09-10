@@ -1,11 +1,15 @@
 ---
-title: "Инструкция по работе с ctrl-imsi-profile.py"
-author: "Open5GS Administration"
+title: "Инструкция по работе с утилитой ctrl-imsi-profile.py"
+subtitle: "User Guide v1.1"
 date: "2026"
 lang: ru-RU
 ---
 
-# Инструкция по работе с ctrl-imsi-profile.py
+# Инструкция по работе с утилитой ctrl-imsi-profile.py
+
+**User Guide v1.1**
+
+---
 
 ## Содержание
 
@@ -32,16 +36,13 @@ lang: ru-RU
 
 ## 1. Назначение
 
-`ctrl-imsi-profile.py` — CLI-скрипт для управления абонентами Open5GS
-(4G и 5G) в развёртываниях на базе `docker compose`.
+`ctrl-imsi-profile.py` — CLI-скрипт для управления абонентами Open5GS (4G и 5G)
+в развёртываниях на базе `docker compose`.
 
 Скрипт работает через уже запущенные контейнеры:
 
 - `open5gs-dbctl` в контейнере с compose-сервисом `populate`;
 - `mongo` shell в контейнере с compose-сервисом `mongodb`.
-
-Никаких `docker run`, никаких внешних образов — только `docker exec`
-в существующие контейнеры.
 
 Возможности:
 
@@ -51,9 +52,12 @@ lang: ru-RU
 - полная очистка БД (`purge`);
 - просмотр документа абонента и списка всех абонентов;
 - проверка окружения;
-- поддержка OP и OPC;
-- настраиваемый профиль: APN, PDN, QCI, ARP, AMF, SQN, S-NSSAI, AMBR;
-- автоматическое определение контейнеров — работает в любом compose-проекте.
+- поддержка **OP** и **OPC**;
+- настраиваемый профиль: **APN** (несколько сессий), **QCI/ARP**
+  индивидуально для каждого APN, **PDN** (IPv4/IPv6/IPv4v6),
+  **статический IP**, **AMF**, **SQN**, **S-NSSAI**, **AMBR**;
+- автоматическое определение контейнеров — работает в любом
+  compose-проекте (`open5gs-compose`, `box`, `my5g`, ...).
 
 ---
 
@@ -63,7 +67,8 @@ lang: ru-RU
 - `docker` в `PATH`;
 - запущенные контейнеры compose-сервисов `mongodb` и `populate`;
 - MongoDB 5.0 или новее (проверено на `mongo:5.0.10-focal`);
-- Open5GS 2.7.x (образы `gradiant/open5gs:2.7.7`, `gradiant/open5gs-dbctl:0.10.3`).
+- Open5GS 2.7.x (образы `gradiant/open5gs:2.7.7`,
+  `gradiant/open5gs-dbctl:0.10.3`).
 
 Сторонние Python-пакеты не требуются — только стандартная библиотека.
 
@@ -106,11 +111,20 @@ lang: ru-RU
 # массовое удаление из файла
 ./ctrl-imsi-profile.py del --file subscribers.txt
 
-# одиночное добавление
+# одиночное добавление (базовое)
 ./ctrl-imsi-profile.py add \
     --imsi 001010000000001 \
     --key 00112233445566778899aabbccddeeff \
     --op  000102030405060708090a0b0c0d0e0f
+
+# одиночное добавление с профилем (APN, QCI/ARP, IP)
+./ctrl-imsi-profile.py add \
+    --imsi 001010000000001 \
+    --key 00112233445566778899aabbccddeeff \
+    --op  000102030405060708090a0b0c0d0e0f \
+    --apn internet --qci 9 --arp 8 \
+    --apn-extra ims:5:1,mms:6:3 \
+    --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5
 
 # одиночное удаление
 ./ctrl-imsi-profile.py del --imsi 001010000000001
@@ -159,8 +173,10 @@ lang: ru-RU
 CSV. Одна строка — один абонент. Поля разделяются запятыми:
 
 ```
-imsi, OP|OPC, ki_hex, op_or_opc_hex
+imsi, OP|OPC, ki_hex, op_or_opc_hex [, apn_spec] [, pdn] [, ip] [, qci] [, arp]
 ```
+
+**Обязательные поля (первые 4):**
 
 | Поле | Описание |
 |------|----------|
@@ -169,7 +185,29 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 | `ki_hex` | 32 hex-символа (KI) |
 | `op_or_opc_hex` | 32 hex-символа (OP или OPC) |
 
-### 6.3. Правила разбора
+**Опциональные поля (могут отсутствовать или быть пустыми):**
+
+| Поле | Описание |
+|------|----------|
+| `apn_spec` | список сессий через `;`. Каждая: `имя` или `имя:qci:arp` |
+| `pdn` | `ipv4` \| `ipv6` \| `ipv4v6` |
+| `ip` | статический IP: v4, v6 или v4/v6 (dual-stack) |
+| `qci` | целое, для **основной** сессии (если в `apn_spec` не задано явно) |
+| `arp` | целое, для **основной** сессии (если в `apn_spec` не задано явно) |
+
+### 6.3. Формат `apn_spec`
+
+```
+internet                          → только internet, QCI/ARP из CLI/дефолта
+internet:9:8                      → internet, QCI=9, ARP=8
+internet:9:8;ims:5:1              → internet (9/8) + ims (5/1)
+internet:9:8;ims:5:1;mms:6:3      → три сессии
+internet;ims;mms;foo              → четыре сессии (макс. по OGS_MAX_NUM_OF_SESS)
+```
+
+Максимум сессий — **4** на один срез.
+
+### 6.4. Правила разбора
 
 - пустые строки игнорируются;
 - строки, начинающиеся с `#`, — комментарии;
@@ -177,18 +215,23 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
   считается заголовком и пропускается;
 - если полей меньше 4 — строка пропускается с предупреждением;
 - если поле 2 не `OP` и не `OPC` — строка пропускается с предупреждением;
-- если IMSI не похож на 14–15 цифр — строка пропускается с предупреждением.
+- если IMSI не похож на 14–15 цифр — строка пропускается с предупреждением;
+- если `pdn` неизвестен, `qci`/`arp` не число — поле игнорируется,
+  значение берётся из CLI/`DEFAULT_PROFILE`.
 
-### 6.4. Пример
+### 6.5. Пример
 
 ```
-# imsi, mode, ki, op_or_opc
+# imsi, mode, ki, op_or_opc, apn_spec, pdn, ip, qci, arp
 001010000000001, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f
-001010000000002, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f
-001010000000003, OPC, 00112233445566778899aabbccddeeff, 0f0e0d0c0b0a09080706050403020100
+001010000000002, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f, internet, ipv4, 10.45.0.5
+001010000000003, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f, internet:9:8;ims:5:1, ipv4v6, 10.45.0.6/2001:db8::6
+001010000000004, OPC, 00112233445566778899aabbccddeeff, 0f0e0d0c0b0a09080706050403020100, internet, ipv6, 2001:db8::7, 8, 5
 ```
 
-### 6.5. Если файла нет
+### 6.6. Если файла нет
+
+При запуске массовой операции без `--file` скрипт сообщит:
 
 ```
 [ERROR] для массовой операции нужен --file <path>
@@ -196,7 +239,7 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 [ERROR] подсказка: ./ctrl-imsi-profile.py help-file
 ```
 
-Скрипт завершается без изменений в БД.
+и завершится без изменений в БД.
 
 ---
 
@@ -212,6 +255,11 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 - если задан `--imsi`, файл не читается;
 - если задан `--file`, `--imsi` не используется;
 - если не задано ни то, ни другое — ошибка.
+
+Параметры профиля (`--apn`, `--qci`, `--arp`, `--apn-extra`, `--pdn`,
+`--static-ip`) работают **одинаково** в обоих режимах. В массовом режиме
+значения из файла имеют приоритет над CLI-флагами, а в одиночном —
+CLI-флаги имеют приоритет над `DEFAULT_PROFILE`.
 
 ---
 
@@ -243,9 +291,9 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 
 ```bash
 ./ctrl-imsi-profile.py add --file subscribers.txt \
-    --apn internet --apn-extra ims,internet2 \
-    --pdn ipv4v6 --qci 8 --arp 5 \
-    --ims-qci 5 --ims-arp 1 \
+    --apn internet --qci 9 --arp 8 \
+    --apn-extra ims:5:1,mms:6:3 \
+    --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5 \
     --amf 8000 --sst 1 --sd ffffff \
     --ambr-ul 1000000 --ambr-dl 1000000 \
     --security OP
@@ -253,16 +301,35 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 
 Особенности:
 
-- `--security OP` переопределяет режим для **всех** абонентов,
-  даже если в файле указан `OPC`;
-- `--apn-extra ""` — убрать все дополнительные APN;
+- `--security OP` переопределяет режим для **всех** абонентов, даже
+  если в файле указан `OPC`;
+- `--apn-extra ""` — убрать все дополнительные сессии;
 - `--pdn ipv6` — тип PDN IPv6; `--pdn ipv4v6` — dual-stack;
+- `--static-ip 10.45.0.5` — статический IPv4;
+- `--static-ip 2001:db8::5` — статический IPv6;
+- `--static-ip 10.45.0.5/2001:db8::5` — оба адреса (dual-stack);
 - `--file /path/to/other.txt` — другой файл абонентов.
 
-### 8.2. Идемпотентность
+### 8.2. Приоритеты параметров
+
+Для каждого параметра профиля (apn, qci, arp, pdn, ip):
+
+**В массовом режиме:**
+
+1. колонка в строке файла (если задана и не пуста);
+2. CLI-флаг;
+3. `DEFAULT_PROFILE`.
+
+**В одиночном режиме:**
+
+1. CLI-флаг;
+2. `DEFAULT_PROFILE`.
+
+### 8.3. Идемпотентность
 
 Повторный запуск `add` безопасен: уже существующие абоненты
-пропускаются, дубли не создаются.
+пропускаются, дубли не создаются. Гонка `E11000` при параллельной
+записи обрабатывается как «уже существует», а не как ошибка.
 
 ---
 
@@ -281,7 +348,7 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 
 ## 10. Одиночные операции
 
-### 10.1. Добавление с OP
+### 10.1. Добавление с OP (базовое)
 
 ```bash
 ./ctrl-imsi-profile.py add \
@@ -299,19 +366,41 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
     --opc 0f0e0d0c0b0a09080706050403020100
 ```
 
-### 10.3. Добавление с собственным профилем
+### 10.3. Добавление с профилем (APN, QCI/ARP, IP)
 
 ```bash
 ./ctrl-imsi-profile.py add \
     --imsi 001010000000003 \
     --key 00112233445566778899aabbccddeeff \
     --op  000102030405060708090a0b0c0d0e0f \
-    --apn internet --apn-extra ims \
-    --pdn ipv4 --qci 9 --arp 8 \
-    --amf 8000
+    --apn internet --qci 9 --arp 8 \
+    --apn-extra ims:5:1,mms:6:3 \
+    --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5
 ```
 
-### 10.4. Удаление
+Здесь:
+
+- `--apn internet` — имя основной сессии;
+- `--qci 9 --arp 8` — QCI/ARP основной сессии;
+- `--apn-extra "ims:5:1,mms:6:3"` — две доп. сессии с индивидуальными
+  QCI/ARP; разделитель `,` или `;`;
+- `--pdn ipv4v6` — dual-stack;
+- `--static-ip 10.45.0.5/2001:db8::5` — оба адреса записываются в `ue.ipv4`
+  и `ue.ipv6` каждой сессии.
+
+### 10.4. Только одна сессия (без дополнительных APN)
+
+```bash
+./ctrl-imsi-profile.py add \
+    --imsi 001010000000004 \
+    --key 00112233445566778899aabbccddeeff \
+    --op  000102030405060708090a0b0c0d0e0f \
+    --apn internet --qci 9 --arp 8 \
+    --apn-extra "" \
+    --pdn ipv4 --static-ip 10.45.0.5
+```
+
+### 10.5. Удаление
 
 ```bash
 ./ctrl-imsi-profile.py del --imsi 001010000000001
@@ -335,7 +424,8 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 ./ctrl-imsi-profile.py show --imsi 001010000000001
 ```
 
-Печатает полный JSON-документ из MongoDB.
+Печатает полный JSON-документ из MongoDB. Статический IP отображается
+в формате `ue.ipv4` / `ue.ipv6`, который понимает WebUI и C-ядро Open5GS.
 
 ### 11.2. Список всех абонентов
 
@@ -410,6 +500,7 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
    ```
 
 3. **Авто-поиск по меткам docker compose:**
+
    - `com.docker.compose.service=mongodb`
    - `com.docker.compose.service=populate`
 
@@ -445,9 +536,10 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 | `No such container: ...` | контейнер не найден | `docker compose ps`; задать `--mongo-container` / `--dbctl-container` |
 | `[ERROR] не удалось определить контейнеры` | нет compose-меток и явных имён | задать флаги или env |
 | `[ERROR] MongoDB недоступна` | mongod не запущен | `docker compose up -d mongodb` |
-| `[ERROR] dbctl add провалился ... E11000` | абонент уже есть | обрабатывается как `skipped`; при частом появлении — обновить скрипт |
+| `[ERROR] dbctl add провалился ... E11000` | абонент уже есть (race) | обрабатывается как `skipped`; при частом появлении — обновить скрипт |
 | `[ERROR] данных нет` | нет `--file` и нет `--imsi` | указать один из них |
 | `[ERROR] не удалось установить security` | mongo не отвечает | `./ctrl-imsi-profile.py check` |
+| WebUI не показывает UE IP | старый формат `ue.addr` | обновить скрипт (в текущей версии — `ue.ipv4`/`ue.ipv6`) |
 
 ---
 
@@ -464,7 +556,19 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
 ./ctrl-imsi-profile.py list
 ```
 
-### 16.2. Смена security режима
+### 16.2. Добавление абонента с несколькими APN и статическим IP
+
+```bash
+./ctrl-imsi-profile.py add \
+    --imsi 001010000000010 \
+    --key 00112233445566778899aabbccddeeff \
+    --op  000102030405060708090a0b0c0d0e0f \
+    --apn brt.serv --qci 9 --arp 8 \
+    --apn-extra ims:5:1 \
+    --pdn ipv4 --static-ip 10.110.26.10
+```
+
+### 16.3. Смена security режима
 
 Если абонент добавлен как OPC, а нужен OP — сначала удалить,
 потом добавить заново:
@@ -477,14 +581,14 @@ imsi, OP|OPC, ki_hex, op_or_opc_hex
     --op  000102030405060708090a0b0c0d0e0f
 ```
 
-### 16.3. Полная перезагрузка БД
+### 16.4. Полная перезагрузка БД
 
 ```bash
 ./ctrl-imsi-profile.py purge --yes
 ./ctrl-imsi-profile.py add --file subscribers.txt
 ```
 
-### 16.4. Перенос скрипта на другой стенд
+### 16.5. Перенос скрипта на другой стенд
 
 ```bash
 scp ctrl-imsi-profile.py user@host:~/box/
@@ -504,7 +608,8 @@ cd ~/box
 - `purge` без `--yes` ничего не удаляет;
 - `del` работает только по явному списку (файл или `--imsi`);
 - `add` идемпотентен — повторный запуск безопасен;
-- OP / OPC не смешиваются: в БД хранится только одно из полей.
+- OP / OPC не смешиваются: в БД хранится только одно из полей
+  (`security.op` или `security.opc`); второе удаляется.
 
 ---
 

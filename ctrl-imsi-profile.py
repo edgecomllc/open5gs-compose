@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Универсальное управление абонентами Open5GS.
+Универсальное управление абонентами Open5GS v2.7.x.
 
 Работает через:
   - open5gs-dbctl в контейнере с сервисом 'populate'
@@ -22,16 +22,6 @@
   check       Проверить связь с контейнерами и MongoDB
   help-file   Справка по формату файла абонентов
 
-Два режима работы add/del:
-
-  Одиночный:   add: --imsi <IMSI> --key <HEX> --op|--opc <HEX>
-               del: --imsi <IMSI>
-               Файл при этом игнорируется.
-
-  Массовый:    --file <path>
-               Формат CSV: imsi, OP|OPC, key_hex, op_or_opc_hex
-               Без --file массовая операция не запускается.
-
 Запуск без параметров выводит справку.
 """
 
@@ -46,29 +36,29 @@ from typing import Dict, List, Optional, Tuple
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
-# Имя БД берётся из OPEN5GS_DB_NAME (по умолчанию open5gs).
-# Имена контейнеров определяются в resolve_containers().
 MONGO_DB = os.environ.get("OPEN5GS_DB_NAME", "open5gs")
 
 ENV_MONGO = "OPEN5GS_MONGO_CONTAINER"
 ENV_DBCTL = "OPEN5GS_DBCTL_CONTAINER"
-ENV_DB    = "OPEN5GS_DB_NAME"
 
 MONGO_SERVICE = "mongodb"
 DBCTL_SERVICE = "populate"
 
-# заполняются в resolve_containers()
+# максимум сессий (APN) на один срез — по OGS_MAX_NUM_OF_SESS
+MAX_SESSIONS_PER_SLICE = 4
+
 MONGO_CONTAINER: Optional[str] = None
 DBCTL_CONTAINER: Optional[str] = None
 
 DEFAULT_PROFILE = {
     "apn":          "internet",
-    "apn_extra":    ["ims"],
-    "pdn_type":     1,             # 1=IPv4, 2=IPv6, 3=IPv4v6
     "qos":          9,
     "arp":          8,
-    "ims_qos":      5,
-    "ims_arp":      1,
+    "extra_sessions": [
+        {"name": "ims", "qos": 5, "arp": 1},
+    ],
+    "pdn_type":     1,             # 1=IPv4, 2=IPv6, 3=IPv4v6
+    "static_ip":    None,          # {"ipv4":..., "ipv6":...} или None
     "amf":          "8000",
     "sqn":          "000000000000",
     "imeisv":       "8609960408606358",
@@ -113,7 +103,6 @@ def _run(cmd: List[str], timeout: int = 30) -> Tuple[int, str, str]:
 # ОПРЕДЕЛЕНИЕ КОНТЕЙНЕРОВ
 # ============================================================
 def _docker_ps_names(*filters: str) -> List[str]:
-    """Имена запущенных контейнеров, удовлетворяющих docker ps --filter."""
     cmd = ["docker", "ps", "--format", "{{.Names}}"]
     for f in filters:
         cmd += ["--filter", f]
@@ -124,7 +113,6 @@ def _docker_ps_names(*filters: str) -> List[str]:
 
 
 def _detect_compose_project() -> Optional[str]:
-    """Имя текущего compose-проекта: COMPOSE_PROJECT_NAME или basename каталога."""
     env_proj = os.environ.get("COMPOSE_PROJECT_NAME")
     if env_proj:
         return env_proj
@@ -133,13 +121,6 @@ def _detect_compose_project() -> Optional[str]:
 
 
 def _detect_container(service: str) -> Optional[str]:
-    """
-    Ищет запущенный контейнер для заданного compose-service.
-    Приоритет:
-      1) label service + project (если project определён);
-      2) label service (без project);
-      3) fallback по имени (substring '-<service>-1').
-    """
     project = _detect_compose_project()
 
     if project:
@@ -164,10 +145,6 @@ def _detect_container(service: str) -> Optional[str]:
 def resolve_containers(cli_mongo: Optional[str] = None,
                        cli_dbctl: Optional[str] = None,
                        quiet: bool = False) -> bool:
-    """
-    Определяет MONGO_CONTAINER и DBCTL_CONTAINER.
-    Приоритет: CLI → ENV → auto-detect → fallback.
-    """
     global MONGO_CONTAINER, DBCTL_CONTAINER
 
     mongo = cli_mongo or os.environ.get(ENV_MONGO)
@@ -197,11 +174,6 @@ def resolve_containers(cli_mongo: Optional[str] = None,
 # ОБЁРТКИ DOCKER EXEC
 # ============================================================
 def mongo_eval(js: str) -> Tuple[bool, str, str]:
-    """
-    Выполняет JS в mongo shell контейнера MongoDB.
-    Считает ошибкой не только ненулевой код возврата, но и ok:0 в stdout:
-    legacy mongo иногда возвращает rc=0 при ошибке выполнения команды.
-    """
     if not MONGO_CONTAINER:
         return False, "", "MONGO_CONTAINER не определён"
     cmd = [
@@ -260,10 +232,6 @@ def check_mongo() -> bool:
 
 
 def subscriber_exists(imsi: str) -> bool:
-    """
-    findOne + явный маркер EXISTS/MISSING — устойчиво к мусору в stdout
-    legacy mongo (в отличие от countDocuments + isdigit).
-    """
     js = (
         f'var d = db.subscribers.findOne({{imsi:"{imsi}"}}, {{_id:1}});'
         f'print(d ? "EXISTS" : "MISSING");'
@@ -275,12 +243,80 @@ def subscriber_exists(imsi: str) -> bool:
 
 
 # ============================================================
+# ПАРСЕР APN-СПЕЦИФИКАЦИИ
+# ============================================================
+def _parse_apn_spec(spec: str) -> List[Dict]:
+    """
+    Разбирает 'internet:9:8;ims:5:1;mms:6:3'.
+    Возвращает [{"name":..., "qos":..., "arp":...}, ...]
+    где qos/arp могут быть None.
+    """
+    if not spec:
+        return []
+
+    result: List[Dict] = []
+    for raw in spec.split(";"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        parts = raw.split(":")
+        name = parts[0].strip()
+        if not name:
+            continue
+        qos = None
+        arp = None
+        if len(parts) >= 2 and parts[1].strip():
+            try:
+                qos = int(parts[1].strip())
+            except ValueError:
+                warn(f"apn-spec '{raw}': qci '{parts[1]}' не число, игнорируем qci")
+        if len(parts) >= 3 and parts[2].strip():
+            try:
+                arp = int(parts[2].strip())
+            except ValueError:
+                warn(f"apn-spec '{raw}': arp '{parts[2]}' не число, игнорируем arp")
+        result.append({"name": name, "qos": qos, "arp": arp})
+
+    if len(result) > MAX_SESSIONS_PER_SLICE:
+        warn(f"apn-spec: {len(result)} сессий > {MAX_SESSIONS_PER_SLICE}, "
+             f"лишние будут отброшены")
+        result = result[:MAX_SESSIONS_PER_SLICE]
+    return result
+
+
+def _parse_static_ip(ip_field: str, pdn: Optional[str]) -> Optional[Dict]:
+    """
+    Возвращает {"ipv4": "..."} / {"ipv6": "..."} / {"ipv4":..., "ipv6":...} / None.
+    """
+    if not ip_field:
+        return None
+    ip_field = ip_field.strip()
+    if not ip_field:
+        return None
+
+    if "/" in ip_field:
+        left, right = ip_field.split("/", 1)
+        left = left.strip()
+        right = right.strip()
+        result = {}
+        if left:
+            result["ipv4"] = left
+        if right:
+            result["ipv6"] = right
+        return result or None
+
+    if ":" in ip_field:
+        return {"ipv6": ip_field}
+    return {"ipv4": ip_field}
+
+
+# ============================================================
 # ФАЙЛ АБОНЕНТОВ
 # ============================================================
 def load_subscribers_file(path: str) -> List[Dict]:
     """
-    Формат (CSV, '#' — комментарий, пустые строки игнорируются):
-        imsi, OP|OPC, key_hex, op_or_opc_hex
+    imsi, OP|OPC, ki_hex, op_or_opc_hex
+          [, apn_spec] [, pdn] [, ip] [, qci] [, arp]
     """
     if not os.path.isfile(path):
         return []
@@ -299,8 +335,9 @@ def load_subscribers_file(path: str) -> List[Dict]:
 
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 4:
-                warn(f"{path}:{lineno}: ожидалось 4 поля, пропускаем")
+                warn(f"{path}:{lineno}: ожидалось минимум 4 поля, пропускаем")
                 continue
+
             imsi, mode, key, op_val = parts[:4]
             mode_u = mode.upper()
             if mode_u not in ("OP", "OPC"):
@@ -309,11 +346,49 @@ def load_subscribers_file(path: str) -> List[Dict]:
             if not re.fullmatch(r"\d{14,15}", imsi):
                 warn(f"{path}:{lineno}: IMSI '{imsi}' не похож на IMSI, пропускаем")
                 continue
+
+            opt = (parts[4:] + [""] * 5)[:5]
+            apn_spec, pdn_field, ip_field, qci_field, arp_field = opt
+
+            sessions = _parse_apn_spec(apn_spec)
+
+            pdn_val: Optional[str] = None
+            if pdn_field:
+                pd = pdn_field.lower()
+                if pd in ("ipv4", "ipv6", "ipv4v6"):
+                    pdn_val = pd
+                else:
+                    warn(f"{path}:{lineno}: неизвестный pdn '{pdn_field}', игнорируем")
+
+            static_ip = _parse_static_ip(ip_field, pdn_val)
+
+            qci_val: Optional[int] = None
+            if qci_field:
+                try:
+                    qci_val = int(qci_field)
+                except ValueError:
+                    warn(f"{path}:{lineno}: qci '{qci_field}' не число, игнорируем")
+
+            arp_val: Optional[int] = None
+            if arp_field:
+                try:
+                    arp_val = int(arp_field)
+                except ValueError:
+                    warn(f"{path}:{lineno}: arp '{arp_field}' не число, игнорируем")
+
+            if sessions and qci_val is not None and sessions[0]["qos"] is None:
+                sessions[0]["qos"] = qci_val
+            if sessions and arp_val is not None and sessions[0]["arp"] is None:
+                sessions[0]["arp"] = arp_val
+
             subs.append({
                 "imsi": imsi,
                 "mode": mode_u,
                 "key":  key.lower(),
                 "opc_or_op": op_val.upper(),
+                "sessions": sessions or None,
+                "pdn":      pdn_val,
+                "static_ip": static_ip,
             })
     return subs
 
@@ -321,26 +396,50 @@ def load_subscribers_file(path: str) -> List[Dict]:
 # ============================================================
 # ПОСТРОЕНИЕ ПРОФИЛЯ
 # ============================================================
+def _build_sessions_from_cli(args) -> Optional[List[Dict]]:
+    apn = getattr(args, "apn", None)
+    apn_extra = getattr(args, "apn_extra", None)
+    qci = getattr(args, "qci", None)
+    arp = getattr(args, "arp", None)
+
+    if not apn and apn_extra is None and qci is None and arp is None:
+        return None
+
+    sessions: List[Dict] = []
+    main_name = apn or DEFAULT_PROFILE["apn"]
+    sessions.append({"name": main_name, "qos": qci, "arp": arp})
+
+    if apn_extra is not None:
+        if apn_extra == "":
+            extra_list = []
+        else:
+            spec = apn_extra.replace(",", ";")
+            extra_list = _parse_apn_spec(spec)
+        sessions.extend(extra_list)
+
+    return sessions
+
+
 def build_profile_from_args(args) -> Dict:
     p = dict(DEFAULT_PROFILE)
 
-    if getattr(args, "apn", None):
-        p["apn"] = args.apn
-    if getattr(args, "apn_extra", None) is not None:
-        if args.apn_extra == "":
-            p["apn_extra"] = []
-        else:
-            p["apn_extra"] = [a.strip() for a in args.apn_extra.split(",") if a.strip()]
+    cli_sessions = _build_sessions_from_cli(args)
+    if cli_sessions is not None:
+        p["_sessions"] = cli_sessions
+    else:
+        p["_sessions"] = [
+            {"name": DEFAULT_PROFILE["apn"],
+             "qos":  DEFAULT_PROFILE["qos"],
+             "arp":  DEFAULT_PROFILE["arp"]},
+        ] + [dict(s) for s in DEFAULT_PROFILE["extra_sessions"]]
+
     if getattr(args, "pdn", None):
         p["pdn_type"] = {"ipv4": 1, "ipv6": 2, "ipv4v6": 3}[args.pdn.lower()]
-    if getattr(args, "qci", None) is not None:
-        p["qos"] = args.qci
-    if getattr(args, "arp", None) is not None:
-        p["arp"] = args.arp
-    if getattr(args, "ims_qci", None) is not None:
-        p["ims_qos"] = args.ims_qci
-    if getattr(args, "ims_arp", None) is not None:
-        p["ims_arp"] = args.ims_arp
+
+    if getattr(args, "static_ip", None):
+        pdn_str = {1: "ipv4", 2: "ipv6", 3: "ipv4v6"}[p["pdn_type"]]
+        p["static_ip"] = _parse_static_ip(args.static_ip, pdn_str)
+
     if getattr(args, "amf", None):
         p["amf"] = args.amf
     if getattr(args, "sqn", None):
@@ -357,6 +456,7 @@ def build_profile_from_args(args) -> Dict:
         p["ambr_dl_kbps"] = args.ambr_dl
     if getattr(args, "security", None):
         p["security_mode"] = args.security.upper()
+
     return p
 
 
@@ -387,48 +487,74 @@ def _fix_security(imsi: str, key: str, mode: str, opc_or_op: str, amf: str) -> b
     return okc and "OK" in out
 
 
-def _set_profile(imsi: str, profile: Dict) -> bool:
-    def make_apn(name, qos, arp, pdn_type):
-        return {
-            "name": name,
-            "type": pdn_type,
-            "qos": {
-                "index": qos,
-                "arp": {
-                    "priority_level": arp,
-                    "pre_emption_capability": 1,
-                    "pre_emption_vulnerability": 1,
-                },
-            },
-            "ambr": {
-                "uplink":   {"value": profile["ambr_ul_kbps"], "unit": 1},
-                "downlink": {"value": profile["ambr_dl_kbps"], "unit": 1},
-            },
-            "pcc_rule": [],
-        }
+def _build_session_obj(session: Dict, pdn_type: int, static_ip: Optional[Dict],
+                       ambr_ul: int, ambr_dl: int) -> Dict:
+    """
+    Собирает объект сессии (APN) для slice.session.
+    Статический IP записывается в ue.ipv4 / ue.ipv6 —
+    именно эти поля использует C-ядро Open5GS и WebUI.
+    """
+    qos = session.get("qos")
+    arp = session.get("arp")
+    if qos is None:
+        qos = DEFAULT_PROFILE["qos"]
+    if arp is None:
+        arp = DEFAULT_PROFILE["arp"]
 
-    sessions = [make_apn(profile["apn"], profile["qos"], profile["arp"], profile["pdn_type"])]
-    for extra_name in profile.get("apn_extra", []):
-        if extra_name.lower() == "ims":
-            sessions.append(make_apn(extra_name, profile["ims_qos"],
-                                     profile["ims_arp"], profile["pdn_type"]))
-        else:
-            sessions.append(make_apn(extra_name, profile["qos"],
-                                     profile["arp"], profile["pdn_type"]))
+    obj = {
+        "name": session["name"],
+        "type": pdn_type,
+        "qos": {
+            "index": int(qos),
+            "arp": {
+                "priority_level": int(arp),
+                "pre_emption_capability": 1,
+                "pre_emption_vulnerability": 1,
+            },
+        },
+        "ambr": {
+            "uplink":   {"value": int(ambr_ul), "unit": 1},
+            "downlink": {"value": int(ambr_dl), "unit": 1},
+        },
+        "pcc_rule": [],
+    }
+
+    if static_ip:
+        ue: Dict = {}
+        if pdn_type in (1, 3) and static_ip.get("ipv4"):
+            ue["ipv4"] = static_ip["ipv4"]
+        if pdn_type in (2, 3) and static_ip.get("ipv6"):
+            ue["ipv6"] = static_ip["ipv6"]
+        if ue:
+            obj["ue"] = ue
+
+    return obj
+
+
+def _set_profile(imsi: str, sessions: List[Dict], profile: Dict) -> bool:
+    pdn_type = profile["pdn_type"]
+    static_ip = profile.get("static_ip")
+    ambr_ul = profile["ambr_ul_kbps"]
+    ambr_dl = profile["ambr_dl_kbps"]
+
+    session_objs = [
+        _build_session_obj(s, pdn_type, static_ip, ambr_ul, ambr_dl)
+        for s in sessions[:MAX_SESSIONS_PER_SLICE]
+    ]
 
     slice_doc = [{
         "sst": profile["sst"],
         "sd":  profile["sd"],
         "default_indicator": True,
-        "session": sessions,
+        "session": session_objs,
     }]
 
     set_doc = {
         "sqn":    profile["sqn"],
         "imeisv": profile["imeisv"],
         "ambr": {
-            "uplink":   {"value": profile["ambr_ul_kbps"], "unit": 1},
-            "downlink": {"value": profile["ambr_dl_kbps"], "unit": 1},
+            "uplink":   {"value": ambr_ul, "unit": 1},
+            "downlink": {"value": ambr_dl, "unit": 1},
         },
         "slice": slice_doc,
         "access_restriction_data": 32,
@@ -452,20 +578,36 @@ def _set_profile(imsi: str, profile: Dict) -> bool:
     return "matched=1" in out
 
 
-def add_one(sub: Dict, profile: Dict, quiet: bool = False) -> str:
+def add_one(sub: Dict, base_profile: Dict, quiet: bool = False) -> str:
     """'added' | 'skipped' | 'failed'."""
     imsi = sub["imsi"]
     if not quiet:
         hdr(f"Абонент: {imsi}")
+
+    profile = dict(base_profile)
+
+    if sub.get("sessions"):
+        sessions = [dict(s) for s in sub["sessions"]]
+        for i, s in enumerate(sessions):
+            if s.get("qos") is None:
+                s["qos"] = (base_profile.get("qos", DEFAULT_PROFILE["qos"])
+                            if i == 0 else DEFAULT_PROFILE["qos"])
+            if s.get("arp") is None:
+                s["arp"] = (base_profile.get("arp", DEFAULT_PROFILE["arp"])
+                            if i == 0 else DEFAULT_PROFILE["arp"])
+    else:
+        sessions = [dict(s) for s in base_profile.get("_sessions", [])]
+
+    if sub.get("pdn"):
+        profile["pdn_type"] = {"ipv4": 1, "ipv6": 2, "ipv4v6": 3}[sub["pdn"]]
+    if sub.get("static_ip"):
+        profile["static_ip"] = sub["static_ip"]
 
     if subscriber_exists(imsi):
         info(f"Абонент {imsi} уже существует — пропускаем")
         return "skipped"
 
     okc, out, errs = dbctl(["add", imsi, sub["key"], sub["opc_or_op"]])
-
-    # dbctl add может упасть с E11000, если абонент уже есть
-    # (ложный negative в subscriber_exists или реальный race).
     if not okc:
         combined = f"{out}\n{errs}"
         if "E11000" in combined or "duplicate key" in combined:
@@ -486,7 +628,7 @@ def add_one(sub: Dict, profile: Dict, quiet: bool = False) -> str:
         err(f"не удалось установить security ({sub['mode']}) для {imsi}")
         return "failed"
 
-    if not _set_profile(imsi, profile):
+    if not _set_profile(imsi, sessions, profile):
         err(f"не удалось записать профиль для {imsi}")
         return "failed"
 
@@ -495,8 +637,16 @@ def add_one(sub: Dict, profile: Dict, quiet: bool = False) -> str:
         return "failed"
 
     if not quiet:
-        names = [profile["apn"]] + profile.get("apn_extra", [])
-        info(f"Профиль: APN={', '.join(names)}, "
+        parts = [f"{s['name']}({s.get('qos') or DEFAULT_PROFILE['qos']}/"
+                 f"{s.get('arp') or DEFAULT_PROFILE['arp']})" for s in sessions]
+        pdn_str = {1: "IPv4", 2: "IPv6", 3: "IPv4v6"}[profile["pdn_type"]]
+        ip_str = ""
+        if profile.get("static_ip"):
+            ip_str = " IP=" + "/".join(filter(None, [
+                profile["static_ip"].get("ipv4"),
+                profile["static_ip"].get("ipv6"),
+            ]))
+        info(f"Профиль: APN={'; '.join(parts)}, PDN={pdn_str}{ip_str}, "
              f"S-NSSAI={profile['sst']}/{profile['sd']}, "
              f"AMF={profile['amf']}, SQN={profile['sqn']}, "
              f"Security={sub['mode']}")
@@ -505,7 +655,7 @@ def add_one(sub: Dict, profile: Dict, quiet: bool = False) -> str:
 
 
 def del_one(imsi: str, quiet: bool = False) -> str:
-    """'deleted' | 'missing' | 'failed'. Удаление — синхронное, через deleteOne."""
+    """'deleted' | 'missing' | 'failed'."""
     if not quiet:
         hdr(f"Абонент: {imsi}")
 
@@ -534,7 +684,6 @@ def del_one(imsi: str, quiet: bool = False) -> str:
 # СБОР ЦЕЛЕЙ
 # ============================================================
 def collect_targets_single(args) -> Optional[List[Dict]]:
-    """Список из --imsi. None — если --imsi не задан (массовый режим)."""
     if not args.imsi:
         return None
 
@@ -557,12 +706,14 @@ def collect_targets_single(args) -> Optional[List[Dict]]:
             "mode": mode,
             "key":  (args.key or "").lower(),
             "opc_or_op": val.upper() if val else "",
+            "sessions": None,
+            "pdn": None,
+            "static_ip": None,
         })
     return subs
 
 
 def collect_targets_mass(args) -> List[Dict]:
-    """Массовый режим: требует --file."""
     if not args.file:
         err("для массовой операции нужен --file <path>")
         extra = " --key <HEX> --op|--opc <HEX>" if args.cmd == "add" else ""
@@ -600,10 +751,11 @@ def cmd_add(args):
     info(f"Режим: {mode}")
 
     profile = build_profile_from_args(args)
-    apn_extra_str = ", ".join(profile["apn_extra"]) if profile["apn_extra"] else "(нет)"
+    sessions_dbg = profile.get("_sessions", [])
+    parts = [f"{s['name']}({s.get('qos') or '-'}/{s.get('arp') or '-'})"
+             for s in sessions_dbg]
     pdn_str = {1: "IPv4", 2: "IPv6", 3: "IPv4v6"}[profile["pdn_type"]]
-    info(f"Профиль: APN={profile['apn']}, APN extra={apn_extra_str}, "
-         f"PDN={pdn_str}, QCI={profile['qos']}, ARP={profile['arp']}, "
+    info(f"Профиль базовый: APN={'; '.join(parts)}, PDN={pdn_str}, "
          f"AMF={profile['amf']}, S-NSSAI={profile['sst']}/{profile['sd']}, "
          f"Security={profile['security_mode']}")
 
@@ -676,7 +828,6 @@ def cmd_del(args):
 
 
 def cmd_purge(args):
-    """Удаляет ВСЕХ абонентов из БД. Без --yes — только показывает."""
     hdr("Полная очистка БД абонентов Open5GS")
 
     if not ensure_containers():
@@ -775,34 +926,95 @@ SUBSCRIBERS_FILE_HELP = """\
 Одна строка — один абонент. Поля разделяются запятыми:
 
     imsi, OP|OPC, ki_hex, op_or_opc_hex
+          [, apn_spec] [, pdn] [, ip] [, qci] [, arp]
+
+Обязательные поля (первые 4):
 
   imsi            14 или 15 цифр
   OP|OPC          "OP"  — в 4-м поле лежит OP
                   "OPC" — в 4-м поле лежит OPC
   ki_hex          32 hex-символа (KI)
-  op_or_opc_hex   32 hex-символа (OP или OPC — в зависимости от 2-го поля)
+  op_or_opc_hex   32 hex-символа (OP или OPC)
 
-Правила разбора:
-  * пустые строки игнорируются;
-  * строки, начинающиеся с '#', — комментарии;
-  * первая значимая строка, начинающаяся с 'imsi' (регистронезависимо),
-    считается заголовком и пропускается;
-  * если полей меньше 4 — строка пропускается с предупреждением;
-  * если поле 2 не OP и не OPC — строка пропускается с предупреждением;
-  * если IMSI не похож на 14-15 цифр — строка пропускается с предупреждением.
+apn_spec — список сессий через ';'. Каждая сессия:
+    имя              → QCI/ARP берутся из CLI или дефолта
+    имя:qci:arp      → индивидуальные QCI и ARP для этой сессии
 
-Пример (значения фиктивные, только для формата):
+Примеры:
+    internet
+    internet:9:8
+    internet:9:8;ims:5:1
+    internet:9:8;ims:5:1;mms:6:3
+    internet:9:8;ims:5:1;mms:6:3;foo:7:4   (максимум 4 сессии)
 
-    # imsi, mode, ki, op_or_opc
+pdn: ipv4 | ipv6 | ipv4v6
+ip:  статический адрес (v4, v6 или v4/v6 для dual-stack)
+qci: целое, для ОСНОВНОЙ сессии (если в apn_spec явно не задано)
+arp: целое, для ОСНОВНОЙ сессии (если в apn_spec явно не задано)
+
+Пример массового добавления:
+
+    # imsi, mode, ki, op_or_opc, apn_spec, pdn, ip, qci, arp
     001010000000001, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f
-    001010000000002, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f
-    001010000000003, OPC, 00112233445566778899aabbccddeeff, 0f0e0d0c0b0a09080706050403020100
+    001010000000002, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f, internet, ipv4, 10.45.0.5
+    001010000000003, OP,  00112233445566778899aabbccddeeff, 000102030405060708090a0b0c0d0e0f, internet:9:8;ims:5:1, ipv4v6, 10.45.0.6/2001:db8::6
+    001010000000004, OPC, 00112233445566778899aabbccddeeff, 0f0e0d0c0b0a09080706050403020100, internet, ipv6, 2001:db8::7, 8, 5
 
-Одиночные операции без файла:
 
+Одиночные операции без файла
+============================
+
+Все параметры профиля из файла можно задать флагами. Работают ТЕ ЖЕ
+флаги, что и для массового режима:
+
+    --apn           имя основной сессии (APN)
+    --qci           QCI/5QI основной сессии
+    --arp           ARP основной сессии
+    --apn-extra     доп. сессии вида name[:qci:arp], через ',' или ';'
+    --pdn           ipv4 | ipv6 | ipv4v6
+    --static-ip     статический IP: v4, v6 или v4/v6 (dual-stack)
+
+Базовые случаи:
+
+    # только ключи — профиль по умолчанию (internet + ims, ipv4, 9/8 и 5/1)
     add --imsi <IMSI> --key <HEX> --op  <HEX>
     add --imsi <IMSI> --key <HEX> --opc <HEX>
+
+    # основная сессия + одна дополнительная, IPv4, статический IP
+    add --imsi <IMSI> --key <HEX> --op <HEX> \\
+        --apn internet --qci 9 --arp 8 \\
+        --apn-extra ims:5:1 \\
+        --pdn ipv4 --static-ip 10.45.0.5
+
+    # три сессии с индивидуальными QCI/ARP, dual-stack, статические адреса
+    add --imsi <IMSI> --key <HEX> --op <HEX> \\
+        --apn internet --qci 9 --arp 8 \\
+        --apn-extra ims:5:1,mms:6:3 \\
+        --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5
+
+    # убрать все доп. сессии — оставить только основную
+    add --imsi <IMSI> --key <HEX> --op <HEX> \\
+        --apn internet --qci 9 --arp 8 \\
+        --apn-extra "" \\
+        --pdn ipv4
+
+    # удаление (профиль не нужен)
     del --imsi <IMSI>
+
+
+Приоритеты значений
+===================
+
+Для каждого параметра (apn, qci, arp, pdn, ip):
+
+  массовый режим:
+    1) колонка в строке файла;
+    2) CLI-флаг;
+    3) DEFAULT_PROFILE.
+
+  одиночный режим:
+    1) CLI-флаг;
+    2) DEFAULT_PROFILE.
 """
 
 
@@ -830,21 +1042,40 @@ def build_parser() -> argparse.ArgumentParser:
 режимы add/del:
 
   одиночный (--imsi):       файл игнорируется
-      %(prog)s add --imsi 001010000000001 \\
-                   --key 00112233445566778899aabbccddeeff \\
-                   --op  000102030405060708090a0b0c0d0e0f
-      %(prog)s del --imsi 001010000000001
+
+      базовый случай:
+        %(prog)s add --imsi 001010000000001 \\
+                     --key 00112233445566778899aabbccddeeff \\
+                     --op  000102030405060708090a0b0c0d0e0f
+
+      с профилем (APN, QCI/ARP, доп. сессии, PDN, статический IP):
+        %(prog)s add --imsi 001010000000001 \\
+                     --key 00112233445566778899aabbccddeeff \\
+                     --op  000102030405060708090a0b0c0d0e0f \\
+                     --apn internet --qci 9 --arp 8 \\
+                     --apn-extra ims:5:1,mms:6:3 \\
+                     --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5
+
+      удаление:
+        %(prog)s del --imsi 001010000000001
 
   массовый (--file):        список из файла
+
       %(prog)s add --file subscribers.txt
       %(prog)s del --file subscribers.txt
+
+  параметры профиля (--apn, --qci, --arp, --apn-extra, --pdn, --static-ip)
+  работают ОДИНАКОВО в одиночном и массовом режимах. В массовом режиме
+  значения из файла (колонки apn_spec/pdn/ip/qci/arp) имеют приоритет
+  над CLI-флагами; если колонка пустая — берётся CLI-флаг, а если и он
+  не задан — значение по умолчанию.
 
 примеры:
 
   %(prog)s check
   %(prog)s add --file subscribers.txt
-  %(prog)s add --file subscribers.txt --apn internet --apn-extra ims \\
-              --pdn ipv4 --qci 9 --arp 8 --security OP
+  %(prog)s add --file subscribers.txt --apn internet --qci 9 --arp 8 \\
+              --apn-extra ims:5:1,mms:6:3 --security OP
   %(prog)s del --file subscribers.txt
   %(prog)s purge                # только показывает, сколько удалится
   %(prog)s purge --yes          # удаляет всех
@@ -855,7 +1086,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ctrl-imsi-profile.py",
         description=(
-            "Управление абонентами Open5GS.\n"
+            "Управление абонентами Open5GS v2.7.x.\n"
             "Работает через контейнеры с сервисами 'populate' (open5gs-dbctl) "
             "и 'mongodb' (mongo). Имена контейнеров определяются автоматически."
         ),
@@ -863,7 +1094,6 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    # глобальные флаги для переопределения авто-поиска
     p.add_argument("--mongo-container", metavar="NAME", default=None,
                    help=f"имя контейнера MongoDB (env {ENV_MONGO} или авто-поиск)")
     p.add_argument("--dbctl-container", metavar="NAME", default=None,
@@ -885,18 +1115,15 @@ def build_parser() -> argparse.ArgumentParser:
             help="KI в hex (32 символа). Только для одиночного add.",
         )
         g = sp.add_mutually_exclusive_group()
-        g.add_argument(
-            "--op", metavar="HEX",
-            help="OP в hex (32 символа). Только для одиночного add.",
-        )
-        g.add_argument(
-            "--opc", metavar="HEX",
-            help="OPC в hex (32 символа). Только для одиночного add.",
-        )
+        g.add_argument("--op",  metavar="HEX",
+                       help="OP в hex (32 символа). Только для одиночного add.")
+        g.add_argument("--opc", metavar="HEX",
+                       help="OPC в hex (32 символа). Только для одиночного add.")
         sp.add_argument(
             "--file", metavar="PATH", default=None,
             help="файл абонентов для МАССОВОЙ операции. "
-                 "Формат: imsi, OP|OPC, KI_hex, OP_or_OPC_hex. "
+                 "Формат: imsi, OP|OPC, KI_hex, OP_or_OPC_hex "
+                 "[, apn_spec [, pdn [, ip [, qci [, arp]]]]]. "
                  "Без --file массовая операция не запускается.",
         )
 
@@ -905,35 +1132,49 @@ def build_parser() -> argparse.ArgumentParser:
         "add",
         help="Добавить абонентов: массово (--file) или одиночно (--imsi)",
         description=(
-            "Добавляет абонентов в Open5GS.\n\n"
+            "Добавляет абонентов в Open5GS v2.7.x.\n\n"
             "Два режима:\n"
-            "  * одиночный: --imsi <IMSI> --key <HEX> --op|--opc <HEX>\n"
-            "               (файл игнорируется);\n"
-            "  * массовый:  --file <path>  (обязателен для массовой операции).\n\n"
-            "Если ни --imsi, ни --file не задано — ошибка."
+            "  * одиночный: --imsi <IMSI> --key <HEX> --op|--opc <HEX>;\n"
+            "  * массовый:  --file <path>.\n\n"
+            "Оба режима принимают одинаковый набор параметров профиля:\n"
+            "  --apn <name>            имя основной сессии (APN)\n"
+            "  --qci <n> --arp <n>     QCI/ARP основной сессии\n"
+            "  --apn-extra <spec>      доп. сессии вида name[:qci:arp], "
+            "через ',' или ';'\n"
+            "  --pdn ipv4|ipv6|ipv4v6  тип PDN\n"
+            "  --static-ip <ADDR>      статический IP: v4, v6 или v4/v6\n\n"
+            "В массовом режиме значения из файла (колонки apn_spec/pdn/ip/"
+            "qci/arp) переопределяют CLI-флаги для конкретного абонента. "
+            "Если колонка пустая — берётся CLI-флаг, если и он не задан — "
+            "значение по умолчанию.\n\n"
+            "Пример одиночного добавления с профилем:\n"
+            "  ctrl-imsi-profile.py add --imsi 001010000000001 \\\n"
+            "               --key 00112233445566778899aabbccddeeff \\\n"
+            "               --op  000102030405060708090a0b0c0d0e0f \\\n"
+            "               --apn internet --qci 9 --arp 8 \\\n"
+            "               --apn-extra ims:5:1,mms:6:3 \\\n"
+            "               --pdn ipv4v6 --static-ip 10.45.0.5/2001:db8::5"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_target_args(sp_add, "одиночного add")
 
-    prof = sp_add.add_argument_group(
-        "параметры профиля (по умолчанию — как в базовом варианте)")
-    prof.add_argument("--apn", help="основной APN (по умолчанию: internet)")
+    prof = sp_add.add_argument_group("параметры профиля")
+    prof.add_argument("--apn", help="имя основной сессии (APN), по умолчанию internet")
+    prof.add_argument("--qci", type=int,
+                      help="QCI/5QI основной сессии (если явно не указан в apn_spec)")
+    prof.add_argument("--arp", type=int,
+                      help="ARP основной сессии (если явно не указан в apn_spec)")
     prof.add_argument(
         "--apn-extra", dest="apn_extra", default=None, metavar="LIST",
-        help="доп. APN через запятую (по умолчанию: ims). "
-             "Пустая строка '' — без доп. APN.",
+        help="доп. сессии через запятую или ';': 'ims:5:1,mms:6:3'. "
+             "Пустая строка '' — без доп. сессий.",
     )
-    prof.add_argument(
-        "--pdn", choices=["ipv4", "ipv6", "ipv4v6"],
-        help="тип PDN (по умолчанию: ipv4)",
-    )
-    prof.add_argument("--qci", type=int, help="QCI/5QI основного APN (по умолчанию: 9)")
-    prof.add_argument("--arp", type=int, help="ARP основного APN (по умолчанию: 8)")
-    prof.add_argument("--ims-qci", dest="ims_qci", type=int,
-                      help="QCI для IMS APN (по умолчанию: 5)")
-    prof.add_argument("--ims-arp", dest="ims_arp", type=int,
-                      help="ARP для IMS APN (по умолчанию: 1)")
+    prof.add_argument("--pdn", choices=["ipv4", "ipv6", "ipv4v6"],
+                      help="тип PDN (по умолчанию: ipv4)")
+    prof.add_argument("--static-ip", dest="static_ip", metavar="ADDR",
+                      help="статический IP: IPv4, IPv6 или dual-stack через '/': "
+                           "10.45.0.5/2001:db8::5")
     prof.add_argument("--amf", metavar="HEX", help="AMF hex (по умолчанию: 8000)")
     prof.add_argument("--sqn", metavar="HEX", help="SQN hex (по умолчанию: 000000000000)")
     prof.add_argument("--imeisv", help="IMEISV (по умолчанию: 8609960408606358)")
@@ -943,11 +1184,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="AMBR UL в kbps (по умолчанию: 1000000)")
     prof.add_argument("--ambr-dl", dest="ambr_dl", type=int, metavar="KBPS",
                       help="AMBR DL в kbps (по умолчанию: 1000000)")
-    prof.add_argument(
-        "--security", choices=["OP", "OPC", "op", "opc"],
-        help="переопределить OP/OPC для всех абонентов "
-             "(иначе — как в файле для массового или из --op/--opc для одиночного)",
-    )
+    prof.add_argument("--security", choices=["OP", "OPC", "op", "opc"],
+                      help="переопределить OP/OPC для всех абонентов")
     sp_add.set_defaults(func=cmd_add)
 
     # --- del ---
@@ -958,8 +1196,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Удаляет абонентов из Open5GS.\n\n"
             "Два режима:\n"
             "  * одиночный: --imsi <IMSI>;\n"
-            "  * массовый:  --file <path>  (обязателен для массовой операции).\n\n"
-            "Для del --key/--op/--opc не нужны."
+            "  * массовый:  --file <path>."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -972,15 +1209,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Удалить ВСЕХ абонентов из БД (требует --yes)",
         description=(
             "Удаляет всех абонентов из коллекции subscribers.\n"
-            "Без --yes только показывает количество и выходит.\n"
-            "С --yes — удаляет без дополнительных вопросов."
+            "Без --yes только показывает количество и выходит."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sp_purge.add_argument(
-        "--yes", action="store_true",
-        help="подтверждение удаления (без него — только показывает количество)",
-    )
+    sp_purge.add_argument("--yes", action="store_true",
+                          help="подтверждение удаления")
     sp_purge.set_defaults(func=cmd_purge)
 
     # --- show ---
@@ -1023,7 +1257,6 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    # определить контейнеры до вызова команды
     if not resolve_containers(
         cli_mongo=getattr(args, "mongo_container", None),
         cli_dbctl=getattr(args, "dbctl_container", None),
@@ -1036,4 +1269,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
