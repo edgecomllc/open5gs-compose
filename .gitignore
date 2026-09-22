@@ -3,5 +3,5 @@ local-data/
 backups/
 
 *.log
-
+*.pcap
 .DS_Store

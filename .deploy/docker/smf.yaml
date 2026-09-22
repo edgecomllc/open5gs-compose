@@ -9,13 +9,13 @@ global:
 #    peer: 64
 
 smf:
-  sbi:
-    server:
-      - dev: eth0
-        port: 7777
-    client:
-     nrf:
-       - uri: http://open5gs-nrf-sbi:7777
+  #sbi:
+  #  server:
+  #    - dev: eth0
+  #      port: 7777
+    #client:
+    # nrf:
+    #   - uri: http://open5gs-nrf-sbi:7777
     #  scp:
     #    - uri: http://open5gs-nrf-sbi:7777
   pfcp:
@@ -35,12 +35,23 @@ smf:
       - address: 0.0.0.0
         port: 9090
   session:
-    - subnet: 10.167.71.192/24
-      gateway: 10.167.71.193
+    - subnet: 10.10.145.128/28
+      gateway: 10.10.145.129
+      dnn: video
+    - subnet: 10.10.145.112/28
+      gateway: 10.10.145.113
+      dnn: telemetry
+    - subnet: 10.10.145.96/28
+      gateway: 10.10.145.97
+      dnn: poc
+    - subnet: 10.10.145.128/28
+      gateway: 10.10.145.129
+      dnn: VIDEO
+
   dns:
-    - 8.8.8.8
-    - 1.1.1.1
+    - 10.10.136.116
+    - 10.10.136.104
+    #- 10.10.145.57
+    #- 10.10.145.57
   mtu: 1400
-  p-cscf:
-    - 192.168.10.100
   freeDiameter: /opt/open5gs/etc/diameter/smf/smf.conf
