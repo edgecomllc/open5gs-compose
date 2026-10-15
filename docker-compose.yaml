@@ -22,20 +22,55 @@ volumes:
 services:
 
 # Common services
+  openbao:
+    image: ghcr.io/openbao/openbao:2.0.0
+    <<: *container_defaults
+    hostname: openbao
+    ports:
+      - "8200:8200"
+    volumes:
+      - ${DOCKER_SHARED_DIR}/openbao/data:/openbao/data
+      - ${DOCKER_SHARED_DIR}/openbao/secrets:/openbao/secrets
+      - .deploy/docker/openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
+      - .deploy/docker/openbao/entrypoint.sh:/openbao/entrypoint.sh:ro
+    environment:
+      - BAO_ADDR=http://0.0.0.0:8200
+    entrypoint: ["/bin/sh", "/openbao/entrypoint.sh"]
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:8200/v1/sys/health | grep -q '"sealed":false'
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s
+    networks:
+      core-network:
+
   mongodb:
-    image: mongo:5.0.10-focal
+    image: percona/percona-server-mongodb:5.0
     <<: *container_defaults
     ports:
       - ${MONGO_EXT_PORT}:27017
     volumes:
       - ${DOCKER_SHARED_DIR}/mongodb:/data/db
       - .deploy/docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
+      - .deploy/docker/psmdb/mongod.conf:/etc/mongod.conf:ro
+      - ${DOCKER_SHARED_DIR}/openbao/secrets:/etc/mongodb-encryption:ro
+    command: ["mongod", "--config", "/etc/mongod.conf"]
+    depends_on:
+      openbao:
+        condition: service_healthy
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongo 127.0.0.1:27017/test --quiet
-      interval: 2s
-      timeout: 2s
-      retries: 5
-      start_period: 2s
+      test: >
+        sh -c 'echo "db.runCommand(\"ping\").ok" | mongosh 127.0.0.1:27017/test --quiet 2>/dev/null ||
+               echo "db.runCommand(\"ping\").ok" | mongo 127.0.0.1:27017/test --quiet 2>/dev/null'
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     networks:
       core-network:
 
