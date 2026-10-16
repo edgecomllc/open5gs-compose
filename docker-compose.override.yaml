@@ -1,10 +1,43 @@
 
 services:
   sgwu:
-    #image: ghcr.io/edgecomllc/eupf-dev:344a1d079299cbd9710ad537c4709f3d0c242d45
-    image: ghcr.io/edgecomllc/eupf-dev:623857f74497041465ddd80e1d5038fc1f3d1c17
-    profiles: [4g-core]
+    command:
+      - sleep infinity
+    ports: !reset []
+
+  upf-init:
+    image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane
+    profiles: [4g-core, 5g-core]
+    network_mode: host
     privileged: true
+    restart: unless-stopped
+    depends_on:
+      upf:
+        condition: service_healthy
+    entrypoint: ""
+    command:
+      - /bin/sh
+      - -c
+      - |
+        sleep 5
+        ip route add 10.110.26.0/26 via 10.103.255.249 2>/dev/null
+        ip route add 10.110.26.64/26 via 10.103.255.249 2>/dev/null
+        ip route add 10.110.26.128/26 via 10.103.255.249 2>/dev/null
+
+        nft insert rule ip filter DOCKER iifname "bond0.3004" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+        nft insert rule ip filter DOCKER iifname "bond0.3005" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+        nft insert rule ip filter DOCKER iifname "bond0.3006" oifname "$(ip -br a | grep "10.103.0.1" | awk '{print $1}')" accept
+
+        ip l sh | grep veth | awk '{print $2}' | awk -F@ '{print $1}' | xargs -I {} ip link set dev {} xdp obj /app/zeroentrypoint_bpf.o sec xdp/upf_zero_entrypoint
+        while sleep 1; do wget -qO /dev/null http://localhost:8081/api/v1/health || break; done
+
+  upf:
+    # In order to download eupf image from eupf-dev registry use docker login with appropriate credentials first
+    image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane
+    #image: ghcr.io/edgecomllc/eupf-dev:feat-combined-dataplane-no-gtp-ext
+    profiles: [4g-core, 5g-core]
+    privileged: true
+    restart: unless-stopped
     volumes:
       - /sys/fs/bpf:/sys/fs/bpf
       - ./dumps/sgwu:/dumps
@@ -14,14 +47,13 @@ services:
       UPF_XDP_ATTACH_MODE: native
       UPF_API_ADDRESS: ":8081"
       UPF_METRICS_ADDRESS: ":9091"
-      UPF_PFCP_ADDRESS: "sgwu:8805"
-      UPF_PFCP_REMOTE_NODE: sgwc
-      UPF_PFCP_NODE_ID: "sgwu"
-      UPF_N3_ADV_ADDRESS: 10.0.0.60
-      UPF_N3_ADDRESS: ${SGWU_IP}
-      UPF_N9_ADV_ADDRESS: ${SGWU_IP}
-      UPF_N9_ADDRESS: ${SGWU_IP}
-      UPF_GTP_PEER: 10.0.0.210:2152
+      UPF_PFCP_ADDRESS: "upf:8805"
+      UPF_PFCP_NODE_ID: "upf"
+      UPF_N3_ADV_ADDRESS: 10.60.134.2
+      UPF_N3_ADDRESS: ${UPF_IP}
+      UPF_N9_ADV_ADDRESS: ${UPF_IP}
+      UPF_N9_ADDRESS: ${UPF_IP}
+      UPF_GTP_PEER: 10.60.134.100:2152,10.60.134.101:2152
       UPF_HUAWEI_SUPPORT: false
       UPF_LOGGING_LEVEL: debug
       UPF_FEATURE_FTUP: true
@@ -30,8 +62,25 @@ services:
       - /bin/sh
       - -c
       - |
-        ping -c 5 upf
+        apk add tcpdump
+        ping -c 5 nat
+        mkdir -p /etc/iproute2
+        echo "3004 brt_tg" >> /etc/iproute2/rt_tables
+        ip rule add from  10.110.26.0/26 table brt_tg
+        ip route add default via 10.110.27.1 dev eth0 table brt_tg
+        echo "3005 brt_insp " >> /etc/iproute2/rt_tables
+        ip rule add from 10.110.26.64/26 table brt_insp
+        ip route add default via 10.110.27.65 dev eth0 table brt_insp
+        echo "3006 brt_serv" >> /etc/iproute2/rt_tables
+        ip rule add from  10.110.26.128/26 table brt_serv
+        ip route add default via 10.110.27.129 dev eth0 table brt_serv
         /app/bin/eupf
+    healthcheck:
+      test: wget -qO /dev/null http://localhost:8081/api/v1/health || exit 1
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
     ulimits:
       memlock: -1
     cap_add:
@@ -39,11 +88,15 @@ services:
       - SYS_ADMIN
     networks:
       core-network:
-        ipv4_address: ${SGWU_IP}
+        ipv4_address: ${UPF_IP}
     ports:
-      - 10.0.0.60:2152:2152/udp
+      - 2152:2152/udp
+      - 8081:8081/tcp
     sysctls:
       - net.ipv4.conf.all.forwarding=1
+#    depends_on:
+#      - upf-init
+#      - nat
 
   eupf-cli:
     profiles: [edgecom]
@@ -55,77 +108,39 @@ services:
     networks:
       core-network:
 
-  upf:
-    #image: ghcr.io/edgecomllc/eupf-dev:344a1d079299cbd9710ad537c4709f3d0c242d45
-    image: ghcr.io/edgecomllc/eupf-dev:623857f74497041465ddd80e1d5038fc1f3d1c17
-    profiles: [4g-core, 5g-core]
-    privileged: true
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.28.0
+    container_name: blackbox_exporter
     volumes:
-      - /sys/fs/bpf:/sys/fs/bpf
-      - ./dumps/upf:/dumps
-    environment:
-      GIN_MODE: release
-      UPF_INTERFACE_NAME: eth0
-      UPF_XDP_ATTACH_MODE: native
-      UPF_API_ADDRESS: ":8081"
-      UPF_PFCP_ADDRESS: "upf:8805"
-      UPF_PFCP_REMOTE_NODE: "smf"
-      UPF_PFCP_NODE_ID: "eupf"
-      UPF_METRICS_ADDRESS: ":9091"
-      UPF_PA_ADDRESS: ${UPF_IP}
-      UPF_N9_ADDRESS: ${UPF_IP}
-      UPF_N3_ADDRESS: ${UPF_IP}
-      UPF_N3_ADV_ADDRESS: 10.0.0.70
-      UPF_HUAWEI_SUPPORT: false
-      UPF_LOGGING_LEVEL: debug
-      UPF_FEATURE_FTUP: false
-    entrypoint: ""
+      - .deploy/docker/monitoring/blackbox-exporter/blackbox.yml:/etc/blackbox_exporter/config.yml
+    restart: always
     command:
-      - /bin/sh
-      - -c
-      - |
-        apk add tcpdump
-        ping -c 5 nat
-        mkdir -p /etc/iproute2
-        echo "1200 n6if" >> /etc/iproute2/rt_tables
-        ip rule add from 10.167.71.192/26 table n6if
-        ip route add default via `nslookup nat | awk '/^Address: / { print $2 }'` dev eth0 table n6if
-        /app/bin/eupf
-    ulimits:
-      memlock: -1
-    cap_add:
-      - NET_ADMIN
-      - SYS_ADMIN
-    networks:
-      core-network:
-        ipv4_address: ${UPF_IP}
-    ports:
-      - 10.0.1.70:2152:2152/udp
-    sysctls:
-      - net.ipv4.conf.all.forwarding=1
-
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+    network_mode: "service:nat"
 
   nat:
     image: wbitt/network-multitool:alpine-minimal
     profiles: [4g-core, 5g-core]
+    restart: unless-stopped
     sysctls:
       - net.ipv4.conf.all.forwarding=1
     cap_add:
       - NET_ADMIN
     networks:
       core-network:
-    depends_on:
-      - upf
     entrypoint: ""
+    ports:
+      - "9115:9115"
     command:
       - /bin/sh
       - -c
       - |
         ping -c 5 upf
-        iptables -t nat -A POSTROUTING -s 10.167.71.192/26 -o eth0 -j MASQUERADE
+        #iptables -t nat -A POSTROUTING -s 10.167.71.0/24 -o eth0 -j MASQUERADE
+        iptables -t nat -A POSTROUTING -s 10.167.71.0/24 ! -d 10.167.71.0/24 -o eth0 -j MASQUERADE
         iptables -A FORWARD -j ACCEPT
-        ip route add 10.167.71.192/26 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
-        tail -f /dev/null
+        ip route add 10.167.71.0/24 via `nslookup upf | awk '/^Address: / { print $2 }'` dev eth0
+        ping upf
 
 
   # smf:
@@ -140,3 +155,47 @@ services:
   #   networks:
   #     core-network:
   #       ipv4_address: ${SMF_IP}
+  #
+
+  sip-registrar:
+    profiles: [ims]
+    build:
+      context: ./ims
+      dockerfile: Dockerfile
+    container_name: ims-registrar
+      #hostname: registrar.ims.example.com
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"      # SIP UDP
+      - "5060:5060/tcp"      # SIP TCP
+        #- "5061:5061/tcp"      # SIP TLS (опционально)
+    environment:
+      - DOMAIN=ims.example.com
+      - LOG_LEVEL=info
+      - PYTHONUNBUFFERED=1
+        #volumes:
+        #- ./logs:/app/logs
+
+  privatebox-ui:
+    profiles: [ui]
+    image: privatebox-ui:1.0.3
+    container_name: privatebox-ui
+    tty: true
+    stdin_open: true
+    environment:
+      TERM: xterm-256color
+      PRIVATEBOX_AMF_URL: ${PRIVATEBOX_AMF_URL:-http://127.0.0.5:9090}
+      PRIVATEBOX_SMF_URL: ${PRIVATEBOX_SMF_URL:-http://127.0.0.4:9090}
+      PRIVATEBOX_MME_URL: ${PRIVATEBOX_MME_URL:-http://127.0.0.2:9090}
+      PRIVATEBOX_REFRESH: ${PRIVATEBOX_REFRESH:-5s}
+      PRIVATEBOX_TIMEOUT: ${PRIVATEBOX_TIMEOUT:-3s}
+      PRIVATEBOX_MOCK: ${PRIVATEBOX_MOCK:-false}
+        #      PRIVATEBOX_DEBUG: true
+    entrypoint: ""
+    command:
+      - /bin/sh
+      - -c
+      - sleep infinity
+    networks:
+      core-network:
+        

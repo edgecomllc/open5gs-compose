@@ -1,0 +1,16 @@
+[Unit]
+Description=4g-5g Core Docker Compose Application
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/test1/open5gs-compose
+ExecStart=/usr/bin/docker compose --profile 5g-core --profile 4g-core --profile monitoring up -d
+ExecStartPost=/home/test1/open5gs-compose/4g5gcorebox-init.sh
+ExecStop=/usr/bin/docker compose --profile 5g-core --profile 4g-core --profile monitoring down
+
+[Install]
+WantedBy=multi-user.target
+

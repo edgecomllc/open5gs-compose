@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+import argparse
+import binascii
+from Cryptodome.Cipher import AES
+
+def hex_to_bytes(hex_str):
+    return binascii.unhexlify(hex_str)
+
+def bytes_to_hex(byte_data):
+    return binascii.hexlify(byte_data).decode('utf-8')
+
+def decrypt_with_tk(eki, tk, encryption_type='aes'):
+    if encryption_type == 'aes':
+        if len(tk) != 32:  # AES key should be 16 bytes (32 hex characters)
+            raise ValueError("Incorrect AES key length (must be 32 hex characters)")
+        cipher = AES.new(hex_to_bytes(tk), AES.MODE_ECB)
+    else:
+        raise ValueError("Unsupported encryption type. Use 'aes'.")
+
+    decrypted_ki = cipher.decrypt(hex_to_bytes(eki))
+    return bytes_to_hex(decrypted_ki).rstrip('\0')
+
+def main():
+    parser = argparse.ArgumentParser(description="Convert SIM key from EKi to KI using AES decryption.")
+    parser.add_argument('eki', type=str, help='Encrypted Key Identifier in hex format')
+    parser.add_argument('tk', type=str, help='Transforming Key in hex format')
+
+    args = parser.parse_args()
+
+    eki_hex = args.eki
+    tk_hex = args.tk
+
+    try:
+        ki = decrypt_with_tk(eki_hex, tk_hex)  
+        print(f"Derived KI: {ki}")
+    except ValueError as e:
+        print(e)
+
+if __name__ == "__main__":
+    main()
