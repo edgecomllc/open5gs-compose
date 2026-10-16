@@ -2,7 +2,10 @@ logger:
   level: info
 global:
   max:
-    ue: 32
+    ue: 250
+  parameter:
+    fake_csfb: true
+      
 mme:
   freeDiameter: /opt/open5gs/etc/diameter/mme/mme.conf
   s1ap:
@@ -25,14 +28,14 @@ mme:
   gummei:
     - plmn_id:
         mcc: 999
-        mnc: 99
+        mnc: 99 #23
       mme_gid: 2
       mme_code: 1
   tai:
     - plmn_id:
         mcc: 999
-        mnc: 99
-      tac: 9
+        mnc: 99 #23
+      tac: 15054
   security:
     integrity_order:
       - EIA2
@@ -43,11 +46,20 @@ mme:
       - EEA1
       - EEA2
   network_name:
-    full: Dacha
-    short: Dacha
-  mme_name: box1-mme0
+    full: BRT PLTE
+    short: BRT
+  mme_name: brt-epc1-mme1
+#  time:
+#    t3402:
+#      value: 720   # 12 minutes * 60 = 720 seconds
+#    t3396:
+#      value: 720   # 12 minutes * 60 = 720 seconds
+#    t3412:
+#      value: 60  # 54 minutes * 60 = 3240 seconds
+#    t3423:
+#      value: 720   # 12 minutes * 60 = 720 seconds    
   access_control:
     default_reject_cause: 11
     plmn_id:
       mcc: 999
-      mnc: 99
+      mnc: 99 #23

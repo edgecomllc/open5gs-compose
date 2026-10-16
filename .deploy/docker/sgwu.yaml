@@ -2,7 +2,7 @@ logger:
   level: info
 global:
   max:
-    ue: 32
+    ue: 250
 sgwu:
   pfcp:
     server:
@@ -11,4 +11,4 @@ sgwu:
   gtpu:
     server:
       - address: sgwu
-        advertise: 10.0.0.60
+        advertise: 10.60.134.2

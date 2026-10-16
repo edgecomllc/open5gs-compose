@@ -1,0 +1,121 @@
+network:
+  version: 2
+  ethernets:
+    eno3np2: {}
+    eno4np3: {}
+  bonds:
+    bond0:
+      addresses:
+      - "10.110.22.47/24"
+      nameservers:
+        addresses:
+        - 10.110.20.120
+        search: []
+      interfaces:
+      - eno3np2
+      - eno4np3
+      parameters:
+        mode: "802.3ad"
+        lacp-rate: "slow"
+        transmit-hash-policy: "layer2+3"
+      routes:
+      - to: "default"
+        via: "10.110.22.1"
+  vlans:
+    # OAM
+    bond0.3003:
+      id: 3003 
+      link: bond0
+      addresses:
+        - 11.96.112.1/27
+#      routes:
+#        - to: 11.96.112.0/27
+#          via: 11.96.112.30
+
+    # S1 
+    bond0.3002:
+      id: 3002
+      link: bond0 
+      addresses:
+        - 10.60.134.2/24
+
+    # SGI brt.tg
+    bond0.3004:
+      id: 3004
+      link: bond0 
+      addresses:
+        - 10.110.27.6/26
+#      routes:
+#        - to: 0.0.0.0/0
+#          via: 10.110.27.1
+#          table: 3004
+#        - to: 10.110.27.1
+#          scope: link
+#          table: 3004
+      routes:
+        - to: 10.110.27.1/32
+          scope: link
+        - to: 10.110.20.0/24
+          via: 10.110.27.1
+          table: 100
+        - to: 10.110.16.0/24
+          via: 10.110.27.1
+          table: 100            
+      routing-policy:
+        - from: 10.110.26.0/26
+          table: 100
+          priority: 100             
+
+    # SGI brt.insp
+    bond0.3005:
+      id: 3005
+      link: bond0
+      addresses:
+        - 10.110.27.70/26
+#      routes:
+#        - to: 0.0.0.0/0
+#          via: 10.110.27.65
+#          table: 3005
+#        - to: 10.110.27.65
+#          scope: link
+#          table: 3005
+      routes:
+        - to: 10.110.27.65/32
+          scope: link
+        - to: 10.110.20.0/24
+          via: 10.110.27.65
+          table: 200
+        - to: 10.110.16.0/24
+          via: 10.110.27.65
+          table: 200            
+      routing-policy:
+        - from: 10.110.26.64/26
+          table: 200
+          priority: 200
+
+    # SGI brt.serv
+    bond0.3006:
+      id: 3006
+      link: bond0
+      addresses:
+        - 10.110.27.134/26
+#      routes:
+#        - to: 0.0.0.0/0
+#          via: 10.110.27.129
+#          table: 3006
+#        - to: 10.110.27.129
+#          scope: link
+#          table: 3006
+      routes:
+        - to: 10.110.27.129/32
+          scope: link
+        - to: 10.110.20.0/24
+          via: 10.110.27.129
+          table: 300
+        - to: 10.110.16.0/24
+          via: 10.110.27.129
+          table: 300            
+      routing-policy:
+        - from: 10.110.26.128/26
+          table: 300
+          priority: 300          

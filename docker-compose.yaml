@@ -198,7 +198,7 @@ services:
     command:
       - open5gs-amfd
     ports:
-      - 11.131.226.142:38412:38412/sctp
+      - 38412:38412/sctp
     volumes:
       - .deploy/docker/amf.yaml:/opt/open5gs/etc/open5gs/amf.yaml
     networks:
