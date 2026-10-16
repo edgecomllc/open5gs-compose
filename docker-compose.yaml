@@ -502,6 +502,7 @@ services:
   node_exporter_system:
     image: prom/node-exporter:v1.10.2
     container_name: node_exporter_system
+    profiles: [monitoring-host]
     command:
       - '--path.rootfs=/host'
       - '--web.listen-address=:9101'
@@ -509,7 +510,7 @@ services:
       - '--collector.softirqs'
     restart: unless-stopped
     volumes:
-      - '/:/host:ro,rslave'
+      - '/:/host:ro'
     cap_add:
       - NET_ADMIN
       - NET_RAW
