@@ -1,5 +1,14 @@
 #!/bin/sh
 
+# OpenBao entrypoint for the open5gs-compose stack.
+# - Starts OpenBao: TLS listener on :8200 (external, used by PSMDB),
+#   plain HTTP on 127.0.0.1:8201 (container-local health checks / CLI only).
+# - Auto-initializes / auto-unseals using keys stored in /openbao/secrets.
+# - Ensures the KV v2 secrets engine and the PSMDB master key exist
+#   (Percona Server for MongoDB supports ONLY KV v2, secret path secret/data/...).
+
+export BAO_ADDR=http://127.0.0.1:8201
+
 # Helper: fetch Vault status JSON via local CLI.
 # bao status returns exit code 1 for sealed/uninitialized vaults, but still prints valid JSON.
 vault_status() {
@@ -11,18 +20,40 @@ vault_status() {
   fi
 }
 
+# Ensure the KV v2 secrets engine at 'secret' and the PSMDB master key exist.
+# NEVER regenerates the master key if it already exists (encrypted data would be lost).
+# Requires BAO_TOKEN to be exported (root token).
+ensure_psmdb_key() {
+  # KV version of the mounted engine (empty output = engine not mounted at all)
+  KV_VERSION=$(bao secrets list -format=json 2>/dev/null | tr ',' '\n' | grep '"version"' | head -1 | grep -o '[0-9]')
+  if [ -z "$KV_VERSION" ]; then
+    echo "Enabling KV v2 secrets engine at 'secret/'."
+    bao secrets enable -path=secret -version=2 kv > /dev/null 2>&1 || true
+  elif [ "$KV_VERSION" != "2" ]; then
+    echo "KV v$KV_VERSION engine found at 'secret/', replacing with KV v2 (required by PSMDB)."
+    bao secrets disable secret/ > /dev/null 2>&1 || true
+    bao secrets enable -path=secret -version=2 kv > /dev/null 2>&1 || true
+  fi
+
+  if bao kv get -field=value secret/psmdb-encryption > /dev/null 2>&1; then
+    echo "PSMDB master key already present in Vault, keeping it."
+  else
+    ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
+    bao kv put secret/psmdb-encryption value="$ENCRYPTION_KEY" > /dev/null 2>&1
+    echo "PSMDB master key generated and stored in Vault (KV v2)."
+  fi
+}
+
 # Start OpenBao server in background
 bao server -config=/openbao/config/openbao.hcl &
 BAO_PID=$!
 
 # Wait for OpenBao API to be ready (any HTTP response means it's up)
 echo "Waiting for OpenBao to start..."
-until wget --server-response -qO- http://127.0.0.1:8200/v1/sys/health 2>&1 | grep -q "HTTP/1.1"; do
+until wget --server-response -qO- http://127.0.0.1:8201/v1/sys/health 2>&1 | grep -q "HTTP/1.1"; do
   sleep 1
 done
 echo "OpenBao API is ready."
-
-export BAO_ADDR=http://127.0.0.1:8200
 
 # Check initialization status
 HEALTH=$(vault_status)
@@ -54,22 +85,6 @@ if echo "$HEALTH" | grep -q '"initialized": false'; then
     echo "Unsealing OpenBao..."
     bao operator unseal "$UNSEAL_KEY" > /dev/null
 
-    echo "Configuring secrets engine and encryption key..."
-
-    # Enable KV v1 secrets engine at path 'secret'
-    bao secrets enable -path=secret -version=1 kv > /dev/null 2>&1 || true
-
-    # Generate a 32-byte base64 encryption key for PSMDB
-    ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
-
-    # Store the encryption key
-    bao write secret/psmdb-encryption value="$ENCRYPTION_KEY" > /dev/null 2>&1 || true
-
-    # Save token for PSMDB access (readable only by mongod user UID 1001)
-    echo "$ROOT_TOKEN" > /openbao/secrets/vault-token
-    chmod 600 /openbao/secrets/vault-token
-    chown 1001:1001 /openbao/secrets/vault-token
-
     echo "OpenBao initialized. Root token and unseal key saved to /openbao/secrets/"
   else
     echo "ERROR: OpenBao initialization failed."
@@ -91,20 +106,9 @@ elif echo "$HEALTH" | grep -q '"sealed": true'; then
   UNSEAL_KEY=$(cat /openbao/secrets/unseal-key)
   bao operator unseal "$UNSEAL_KEY" > /dev/null
 
-  ROOT_TOKEN=$(cat /openbao/secrets/root-token)
-  echo "$ROOT_TOKEN" > /openbao/secrets/vault-token
-  chmod 600 /openbao/secrets/vault-token
-  chown 1001:1001 /openbao/secrets/vault-token
-
   echo "OpenBao unsealed."
 else
   echo "OpenBao is already initialized and unsealed."
-  if [ -f /openbao/secrets/root-token ]; then
-    ROOT_TOKEN=$(cat /openbao/secrets/root-token)
-    echo "$ROOT_TOKEN" > /openbao/secrets/vault-token
-    chmod 600 /openbao/secrets/vault-token
-    chown 1001:1001 /openbao/secrets/vault-token
-  fi
 fi
 
 # Verify unsealed status
@@ -114,6 +118,23 @@ if echo "$HEALTH" | grep -q '"sealed": true'; then
   kill $BAO_PID
   exit 1
 fi
+
+# Authenticate the CLI (needed for the configuration steps below)
+if [ ! -f /openbao/secrets/root-token ]; then
+  echo "ERROR: root token not found at /openbao/secrets/root-token"
+  kill $BAO_PID
+  exit 1
+fi
+ROOT_TOKEN=$(cat /openbao/secrets/root-token)
+export BAO_TOKEN="$ROOT_TOKEN"
+
+# Save token for PSMDB access (readable only by mongod user UID 1001)
+echo "$ROOT_TOKEN" > /openbao/secrets/vault-token
+chmod 600 /openbao/secrets/vault-token
+chown 1001:1001 /openbao/secrets/vault-token
+
+# Make sure the KV v2 engine and the PSMDB master key exist (idempotent)
+ensure_psmdb_key
 
 echo "OpenBao is ready and unsealed."
 

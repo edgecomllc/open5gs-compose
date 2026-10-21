@@ -1,4 +1,4 @@
-﻿# Open5GS с Percona Server for MongoDB и шифрованием Data-at-Rest
+# Open5GS с Percona Server for MongoDB и шифрованием Data-at-Rest
 
 ## Обзор
 
@@ -14,28 +14,26 @@ Open5GS продолжает работать **без изменений код
 ┌─────────────────┐      ┌─────────────────────────────┐      ┌─────────────────┐
 │   Open5GS       │      │   Percona Server for        │      │   OpenBao KMS   │
 │   (HSS/UDM/     │◄────►│   MongoDB 5.0 (PSMDB)       │◄────►│   (мастер-ключ) │
-│    WebUI и др.) │      │   - WiredTiger encrypted    │      │   - KV v1       │
+│    WebUI и др.) │      │   - WiredTiger encrypted    │      │   - KV v2       │
 │                 │      │   - Vault interface         │      │   - auto-unseal │
 └─────────────────┘      └─────────────────────────────┘      └─────────────────┘
          │                           │
-         │    mongodb://mongodb/     │    HTTP API (8200)
+         │    mongodb://mongodb/     │    HTTPS/TLS API (8200)
          │       open5gs             │    token + secret path
          │                           │
 ```
 
 ---
 
-## ⚠️ Примечание для тестового стенда
+## ✅ Состояние тестового стенда (192.168.0.9)
 
-> **Текущая конфигурация на тестовом стенде (192.168.0.9)**: шифрование MongoDB **отключено**.
+> **Шифрование MongoDB ВКЛЮЧЕНО и работает** (проверено 2026-10-21).
 >
-> **Причина**: Percona Server for MongoDB требует HTTPS-соединение с Vault/OpenBao для получения мастер-ключа. В текущей конфигурации OpenBao работает без TLS (`tls_disable = true`), что приводит к ошибке `SSL connect error` при попытке PSMDB подключиться к OpenBao.
->
-> **Решение для продакшена**: настроить TLS-сертификаты для OpenBao и включить `security.enableEncryption: true` в `mongod.conf`.
->
-> **Файлы, изменённые для тестового стенда**:
-> - `.deploy/docker/psmdb/mongod.conf` — убрана секция `security` (шифрование отключено)
-> - `.deploy/docker/openbao/entrypoint.sh` — `vault-token` создаётся с правами `600` и владельцем `1001:1001`
+> - OpenBao работает с **TLS** на `:8200` (серверный сертификат SAN=openbao, CA — `.deploy/docker/openbao/tls/`); loopback HTTP `:8201` используется только для healthcheck/CLI (в образе BusyBox wget без `--no-check-certificate`).
+> - PSMDB подключается к OpenBao по HTTPS и получает мастер-ключ из **KV v2** секрета `secret/data/psmdb-encryption` (PSMDB 5.0 поддерживает только KV v2).
+> - `init.js` монтируется в `/opt/init/init.js` (НЕ в `/docker-entrypoint-initdb.d`): entrypoint PSMDB иначе сначала запускает временный **незашифрованный** mongod, который создаёт plaintext-метаданные WiredTiger, нечитаемые зашифрованным mongod. Скрипт выполняется из `deploy-encrypted.sh`.
+> - В образе PSMDB нет `mongosh` и `openssl` — используется legacy `mongo`.
+> - Развёртывание: `.deploy/scripts/deploy-encrypted.sh` (с Windows — `.deploy/scripts/deploy-from-windows.ps1`), верификация: `.deploy/scripts/verify-encrypted-stack.sh`.
 
 ---
 
@@ -66,9 +64,9 @@ docker compose logs -f openbao mongodb
 ### 3. Проверка шифрования
 
 ```bash
-# Запустить скрипт верификации
-chmod +x .deploy/scripts/verify-encryption.sh
-./.deploy/scripts/verify-encryption.sh
+# Запустить скрипт верификации (статус контейнеров, БД, TLS, KV v2,
+# отсутствие plaintext IMSI в файлах хранилища, webui)
+bash .deploy/scripts/verify-encrypted-stack.sh
 ```
 
 ---
@@ -78,18 +76,18 @@ chmod +x .deploy/scripts/verify-encryption.sh
 Если в текущей базе уже есть данные абонентов, выполните миграцию:
 
 ```bash
-chmod +x .deploy/scripts/migrate-to-encrypted.sh
-./.deploy/scripts/migrate-to-encrypted.sh
+bash .deploy/scripts/deploy-encrypted.sh
 ```
 
 Скрипт выполнит:
-1. Остановку Open5GS-сервисов (кроме MongoDB)
-2. `mongodump` из текущей базы
-3. Остановку и удаление старого контейнера MongoDB
-4. Резервное копирование старого тома данных
-5. Запуск OpenBao + PSMDB с шифрованием
-6. `mongorestore` данных в зашифрованное хранилище
+1. Генерацию TLS-сертификатов OpenBao (если отсутствуют)
+2. `mongodump` из текущей базы (если дамп ещё не снят)
+3. Остановку стека
+4. Резервное копирование старых томов данных (`mongodb-plain-<ts>`, `openbao-old-<ts>`)
+5. Запуск OpenBao (TLS + KV v2) + PSMDB с шифрованием
+6. `mongorestore` данных в зашифрованное хранилище + выполнение `init.js`
 7. Запуск всех Open5GS-сервисов
+8. Верификацию
 
 ---
 
@@ -179,7 +177,7 @@ DB_URI: mongodb://mongodb/open5gs
 | **Логические бэкапы** | `mongodump` создаёт дамп в **расшифрованном** виде. Файлы дампа необходимо защищать отдельно (например, шифрованием файловой системы или GPG). |
 | **Потеря мастер-ключа** | Если потерян unseal key или root token из `.deploy/docker/local-data/openbao/secrets/`, **данные PSMDB становятся недоступны навсегда**. Рекомендуется резервное копирование этих файлов на защищённый носитель. |
 | **Токен в общем томе** | Токен доступа PSMDB к OpenBao (`vault-token`) хранится в Docker volume с правами `600` и владельцем `1001:1001` (UID mongod в контейнере PSMDB). В продакшене рекомендуется использовать Kubernetes + Secrets или более строгие механизмы управления токенами. |
-| **TLS для OpenBao** | В текущей конфигурации OpenBao работает без TLS (`tls_disable = true`). Для продакшена необходимо настроить TLS-сертификаты. |
+| **TLS для OpenBao** | Включён: TLS `:8200` для PSMDB, loopback HTTP `:8201` для healthcheck/CLI. Сертификаты генерируются `.deploy/scripts/generate-certs.sh` (CA + серверный сертификат SAN=openbao). |
 | **Шифрование включается один раз** | Параметр `enableEncryption: true` применяется только при создании **нового** хранилища. Попытка включить шифрование на существующей незашифрованной базе приведёт к ошибке запуска. |
 
 ---

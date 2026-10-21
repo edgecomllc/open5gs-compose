@@ -33,15 +33,18 @@ services:
       - ${DOCKER_SHARED_DIR}/openbao/secrets:/openbao/secrets
       - .deploy/docker/openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
       - .deploy/docker/openbao/entrypoint.sh:/openbao/entrypoint.sh:ro
+      - .deploy/docker/openbao/tls:/openbao/tls:ro
     environment:
-      - BAO_ADDR=http://0.0.0.0:8200
+      # Loopback HTTP listener (8201) is used by the CLI/healthcheck inside the container;
+      # external clients (PSMDB) connect over TLS to openbao:8200.
+      - BAO_ADDR=http://127.0.0.1:8201
     entrypoint: ["/bin/sh", "/openbao/entrypoint.sh"]
     cap_add:
       - IPC_LOCK
     healthcheck:
       test:
         - CMD-SHELL
-        - wget -qO- http://127.0.0.1:8200/v1/sys/health | grep -q '"sealed":false'
+        - wget -qO- http://127.0.0.1:8201/v1/sys/health | grep -q '"sealed":false'
       interval: 5s
       timeout: 3s
       retries: 15
@@ -56,9 +59,15 @@ services:
       - ${MONGO_EXT_PORT}:27017
     volumes:
       - ${DOCKER_SHARED_DIR}/mongodb:/data/db
-      - .deploy/docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
+      # NOTE: init.js is NOT mounted to /docker-entrypoint-initdb.d on purpose:
+      # the PSMDB entrypoint would first run a temporary UNENCRYPTED mongod,
+      # which creates plaintext WiredTiger metadata that the encrypted mongod
+      # then cannot open. The script is executed by deploy-encrypted.sh instead.
+      - .deploy/docker/mongodb/init.js:/opt/init/init.js:ro
       - .deploy/docker/psmdb/mongod.conf:/etc/mongod.conf:ro
       - ${DOCKER_SHARED_DIR}/openbao/secrets:/etc/mongodb-encryption:ro
+      # CA certificate of OpenBao, used by the PSMDB vault interface (TLS)
+      - .deploy/docker/openbao/tls:/etc/mongodb-tls:ro
     command: ["mongod", "--config", "/etc/mongod.conf"]
     depends_on:
       openbao:
@@ -233,7 +242,7 @@ services:
     command:
       - open5gs-amfd
     ports:
-      - 11.131.226.142:38412:38412/sctp
+      - 192.168.0.9:38412:38412/sctp
     volumes:
       - .deploy/docker/amf.yaml:/opt/open5gs/etc/open5gs/amf.yaml
     networks:
