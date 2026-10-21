@@ -264,6 +264,7 @@ DB_URI: mongodb://mongodb/open5gs
 |-------------|----------|
 | **Data-at-Rest только** | Шифрование защищает данные **на диске**, но не в оперативной памяти (RAM) и не в сетевом трафике между Open5GS и MongoDB. |
 | **Логические бэкапы** | `mongodump` создаёт дамп в **расшифрованном** виде. Файлы дампа необходимо защищать отдельно (например, шифрованием файловой системы или GPG). |
+| **Plaintext-артефакты миграции** | `deploy-encrypted.sh` сохраняет старые незашифрованные тома в `local-data/mongodb-plain-<ts>` и дамп в `.deploy/dump-migration/dump` — это **plaintext на диске**. После проверки целостности зашифрованной БД их необходимо удалить (см. «Очистка plaintext-артефактов миграции»). |
 | **Потеря мастер-ключа** | Если потерян unseal key или root token из `.deploy/docker/local-data/openbao/secrets/`, **данные PSMDB становятся недоступны навсегда**. Рекомендуется резервное копирование этих файлов на защищённый носитель. |
 | **Токен в общем томе** | Токен доступа PSMDB к OpenBao (`vault-token`) хранится в Docker volume с правами `600` и владельцем `1001:1001` (UID mongod в контейнере PSMDB). В продакшене рекомендуется использовать Kubernetes + Secrets или более строгие механизмы управления токенами. |
 | **TLS для OpenBao** | Включён: TLS `:8200` для PSMDB, loopback HTTP `:8201` для healthcheck/CLI. Сертификаты генерируются `.deploy/scripts/generate-certs.sh` (CA + серверный сертификат SAN=openbao). |
@@ -283,13 +284,49 @@ tar czf openbao-secrets-$(date +%Y%m%d).tar.gz .deploy/docker/local-data/openbao
 ### Резервное копирование данных
 
 ```bash
-# Логический бэкап (расшифрованный!)
+# Логический бэкап — сразу шифруем (дамп создаётся РАСШИФРОВАННЫМ!)
 docker compose exec mongodb mongodump --out=/data/db/backup-$(date +%Y%m%d)
 docker compose cp mongodb:/data/db/backup-$(date +%Y%m%d) ./backups/
+tar czf - -C ./backups backup-$(date +%Y%m%d) \
+  | openssl enc -aes-256-cbc -pbkdf2 -out ./backups/backup-$(date +%Y%m%d).tar.enc
+rm -rf ./backups/backup-$(date +%Y%m%d)   # удалить незашифрованную копию
 
-# Физический бэкап (зашифрованный, но требует остановки PSMDB)
+# Физический бэкап (зашифрованный на диске, но требует остановки PSMDB)
 cp -a .deploy/docker/local-data/mongodb ./backups/mongodb-physical-$(date +%Y%m%d)
 ```
+
+### Очистка plaintext-артефактов миграции
+
+После миграции `deploy-encrypted.sh` оставляет на диске **незашифрованные** копии данных (страховка на случай неудачи):
+
+- `local-data/mongodb-plain-<ts>/` — полные plaintext-бэкапы старой БД
+- `local-data/openbao-old-<ts>/` — старые unseal-ключи OpenBao
+- `.deploy/dump-migration/dump/` — plaintext mongodump
+
+Проверить, что это plaintext, можно так (`block_metadata_encrypted=false` = незашифровано):
+
+```bash
+sudo strings .deploy/docker/local-data/mongodb-plain-*/collection-*.wt | grep -o 'encryption=(keyid=[^)]*)' | head
+```
+
+После **подтверждения целостности** зашифрованной БД артефакты нужно удалить (файлы принадлежат root/uid 1001, поэтому через контейнер):
+
+```bash
+# 1. Убедиться, что все данные в зашифрованной БД (сравнить с ожидаемым)
+docker exec open5gs-compose-mongodb-1 mongo open5gs --quiet --eval "db.subscribers.count()"
+
+# 2. Удалить plaintext-артефакты
+docker run --rm \
+  -v "$PWD/.deploy/docker/local-data:/x" \
+  -v "$PWD/.deploy/dump-migration:/d" \
+  busybox sh -c 'rm -rf /x/mongodb-plain-* /x/openbao-old-* /d/dump && ls -la /x'
+
+# 3. Убедиться, что остались только зашифрованная БД и текущий OpenBao
+#    (ожидается: mongodb/ и openbao/)
+```
+
+> **Альтернатива**: вместо удаления — заархивировать с шифрованием и перенести на защищённый носитель:
+> `sudo tar czf - .deploy/docker/local-data/mongodb-plain-* | openssl enc -aes-256-cbc -pbkdf2 -out ~/backups/plain-backup.tar.enc`
 
 ### Восстановление после перезагрузки хоста
 
