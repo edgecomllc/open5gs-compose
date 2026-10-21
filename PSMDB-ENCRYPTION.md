@@ -2,9 +2,21 @@
 
 ## Обзор
 
-В этом проекте стандартная MongoDB Community Edition заменена на **Percona Server for MongoDB (PSMDB) 5.0** с включённым прозрачным шифрованием данных на уровне хранилища (Data-at-Rest Encryption). Мастер-ключ шифрования хранится во внешнем KMS — **OpenBao** (открытый форк HashiCorp Vault).
+Этот проект основан на **open5gs-compose** — docker-compose развёртывании мобильной сети Open5GS (EPC + 5GC: MME/HSS/PCRF, AMF/SMF/UPF и др., плюс мониторинг Grafana/Prometheus). Точка ветвления — коммит `95f82d1` (`deploy(docker-compose): use health check to seamlessly apply zero-ebpf program on host interfaces`).
 
-Open5GS продолжает работать **без изменений кода**, так как PSMDB является drop-in заменой MongoDB Community по протоколу и URI подключения.
+Относительно базового коммита `95f82d1` в этой ветке изменяется следующее:
+
+| Область | Было (базовый коммит) | Стало |
+|---|---|---|
+| СУБД | MongoDB Community Edition | **Percona Server for MongoDB (PSMDB) 5.0** — drop-in замена по протоколу и URI |
+| Шифрование данных | Отсутствует (данные на диске в открытом виде) | **Data-at-Rest Encryption** на уровне движка WiredTiger |
+| Хранение ключей | — | Новый сервис **OpenBao** (открытый форк HashiCorp Vault) — внешний KMS с TLS |
+| `docker-compose.yaml` | Сервис `mongodb` на образе Community | Сервис `mongodb` на образе PSMDB + сервис `openbao`, healthcheck'и, монтирования (токен, CA-сертификат, `init.js` в `/opt/init`) |
+| Конфигурация mongod | Стандартная | `.deploy/docker/psmdb/mongod.conf`: `security.enableEncryption` + секция `vault` |
+| Скрипты | — | `.deploy/scripts/`: развёртывание с миграцией, генерация TLS-сертификатов, верификация, диагностика |
+| Прочее | — | `docker-compose.override.yaml`, `.env`: адреса AMF/N3 для стенда |
+
+Ключевое свойство: **Open5GS продолжает работать без изменений кода и конфигурации** — PSMDB бинарно совместима с MongoDB Community, шифрование прозрачно для клиентов БД, а `DB_URI: mongodb://mongodb/open5gs` не меняется.
 
 ---
 
@@ -29,13 +41,28 @@ Open5GS продолжает работать **без изменений код
 | **PSMDB (mongod)** | СУБД: при записи шифрует страницы, при чтении расшифровывает | Ключи шифрования данных (DEK) в RAM |
 | **OpenBao (KMS)** | Хранилище мастер-ключа (KEK), выдаёт его mongod по TLS | Мастер-ключ, но не сами данные |
 
+### Потоки данных и ключей
+
+1. **Поток данных (plaintext)**: Open5GS-сервисы и утилиты ↔ mongod по обычному протоколу MongoDB (`mongodb://mongodb/open5gs`, порт 27017, Docker-сеть). Mongod отдаёт уже расшифрованные данные — расшифровку делает он сам.
+2. **Поток ключей (TLS)**: mongod ↔ OpenBao по HTTPS (`https://openbao:8200`, KV v2 API-путь `secret/data/psmdb-encryption`). Mongod предъявляет токен из `/etc/mongodb-encryption/vault-token`; подлинность OpenBao проверяется по CA-сертификату из `/etc/mongodb-tls/ca.crt` (серверный сертификат `CN=openbao`).
+3. **Хранение (зашифровано)**: mongod → диск (`.deploy/docker/local-data/mongodb/*.wt`). Каждая страница WiredTiger зашифрована AES-256; без мастер-ключа файлы нечитаемы.
+4. **Управление OpenBao (loopback)**: healthcheck и CLI ходят на `http://127.0.0.1:8201` внутри контейнера OpenBao (в образе BusyBox `wget` без `--no-check-certificate`); наружу открыт только TLS-порт `:8200`.
+
 ---
 
 ## Как работает прозрачное шифрование (и почему данные «видно»)
 
 ### Принцип Data-at-Rest
 
-Шифрование защищает данные **только там, где они лежат в покое** — на диске (`.wt`-файлы в `.deploy/docker/local-data/mongodb/`). Это называется **Data-at-Rest Encryption**. Всё, что происходит «поверх» диска, работает как будто шифрования нет.
+**Data-at-Rest Encryption** — шифрование данных «в покое», то есть там, где они физически хранятся: **на диске**. MongoDB хранит данные в файлах движка WiredTiger (`collection-*.wt`, `index-*.wt` и др. в `.deploy/docker/local-data/mongodb/`). При включённом шифровании WiredTiger **перед записью каждой страницы на диск шифрует её**, а **при чтении с диска — расшифровывает**. Всё это происходит внутри процесса mongod:
+
+- **Чтение**: клиент отправляет запрос → mongod читает нужные страницы с диска → расшифровывает их ключом → отдаёт документ в открытом виде.
+- **Запись**: клиент пишет документ → mongod шифрует страницу → записывает на диск. На диске остаётся только шифртекст.
+
+Отсюда два следствия:
+
+1. **Прозрачность**: клиенты (HSS, WebUI, утилиты) не знают о шифровании — не нужно менять код, URI, драйверы. Любая программа, работавшая с MongoDB, работает с PSMDB без изменений.
+2. **Граница защиты**: защищён **только диск**. Оперативная память mongod, сетевой трафик до mongod и результаты запросов — в открытом виде (см. таблицу ниже).
 
 ### Иерархия ключей
 
@@ -52,24 +79,29 @@ OpenBao (KV v2 secret)                          Mongod (RAM)                    
 2. Мастер-ключом расшифровываются **ключи данных (DEK)** — по одному на каждую таблицу/индекс WiredTiger. DEK существуют только в оперативной памяти mongod.
 3. Каждая страница данных при записи на диск шифруется её DEK (AES-256-CBC). При чтении — расшифровывается. Это делает движок WiredTiger внутри mongod, **автоматически и незаметно** для клиентов.
 
-### Почему `ctrl-imsi-profile.py` показывает IMSI и K/OPC в открытом виде?
+### Что и где шифруется, от чего защита помогает
 
-Это **нормальное, ожидаемое поведение**, а не проблема:
+**Где что находится:**
 
-- Утилита подключается к **живому mongod** по протоколу MongoDB (`mongodb://mongodb/open5gs`). Mongod уже владеет ключами (получил их из OpenBao при старте), поэтому **сам расшифровывает** запрошенные документы и отдаёт клиенту plaintext.
-- То же самое делают HSS, UDR и WebUI — именно поэтому Open5GS работает **без единого изменения кода или конфигурации**.
-- Шифрование прозрачно («transparent») по определению: клиенты БД вообще не знают о его существовании.
+| Место | Состояние данных |
+|---|---|
+| Диск: `.deploy/docker/local-data/mongodb/*.wt` | 🔒 **Зашифровано** (AES-256, страницы WiredTiger + метаданные блоков) |
+| RAM mongod | 🔓 Открыто (расшифрованные страницы, ключи DEK) |
+| Сеть Docker: клиенты ↔ mongod:27017 | 🔓 Открыто (обычный протокол MongoDB) |
+| Сеть Docker: mongod ↔ openbao:8200 | 🔒 **TLS** (защищает передачу мастер-ключа) |
+| OpenBao: `secret/data/psmdb-encryption` | 🔒 Мастер-ключ (хранилище шифруется самим OpenBao) |
+| `mongodump`, экспорт, миграционные бэкапы | 🔓 **Открыто** (дамп создаётся расшифрованным) |
 
-### От чего защита реально помогает (и от чего — нет)
+**От чего защита реально помогает (и от чего — нет):**
 
 | Сценарий | Защищено? | Почему |
 |---|---|---|
-| **Кража/копирование диска или `.wt`-файлов** (сервер украли, сняли образ VM, скопировали `local-data/mongodb`) | ✅ **Да** | Без мастера-ключа из OpenBao файлы — нечитаемый мусор. Проверка: `sudo strings .deploy/docker/local-data/mongodb/collection-*.wt \| head` — видны только `encryption=(keyid=...,block_metadata_encrypted=true)` и бинарный шум, IMSI-паттерны `4660[0-9]\{12\}` отсутствуют |
+| **Кража/копирование диска или `.wt`-файлов** (украден сервер, снят образ VM, скопирован `local-data/mongodb`) | ✅ **Да** | Без мастер-ключа из OpenBao файлы — нечитаемый мусор. Проверка: `sudo strings .deploy/docker/local-data/mongodb/collection-*.wt \| head` — только `encryption=(keyid=...,block_metadata_encrypted=true)` и бинарный шум, IMSI-паттерны отсутствуют |
 | **Утрата unseal-ключей OpenBao** (`local-data/openbao/secrets/`) | ⚠️ **Данные потеряны навсегда** | Мастер-ключ невозможно восстановить — храните резервные копии секретов на защищённом носителе |
-| Подключение к **работающему** mongod (утилиты, HSS, WebUI, злоумышленник с доступом к сети Docker) | ❌ Нет | Mongod отдаёт расшифрованные данные любому авторизованному клиенту — это функция СУБД |
+| Подключение к **работающему** mongod (утилиты, HSS, WebUI, злоумышленник в Docker-сети) | ❌ Нет | Mongod отдаёт расшифрованные данные любому клиенту — это функция СУБД; ограничивается аутентификацией MongoDB и сетевой изоляцией |
 | Данные в **RAM** mongod | ❌ Нет | Data-at-Rest = только диск |
-| Трафик Open5GS ↔ MongoDB внутри Docker-сети | ❌ Нет | При необходимости включается TLS-транспорт MongoDB отдельно (не настроено в этом стенде) |
-| `mongodump` / логические бэкапы | ❌ Нет | Дамп создаётся **расшифрованным** — защищайте файлы дампа отдельно |
+| Трафик Open5GS ↔ MongoDB внутри Docker-сети | ❌ Нет | При необходимости включается TLS-транспорт MongoDB отдельно (не настроено) |
+| `mongodump` / логические бэкапы / экспорт профилей | ❌ Нет | Дамп создаётся **расшифрованным** — шифруйте файлы дампа отдельно |
 
 > **Кратко**: шифрование закрывает одну конкретную угрозу — **offline-доступ к данным** (украденный диск/файлы без ключа). Онлайн-доступ через работающую СУБД оно не ограничивает — для этого нужны аутентификация MongoDB, сетевая изоляция и TLS-транспорт.
 
@@ -88,15 +120,20 @@ docker compose up -d
 
 ---
 
-## ✅ Состояние тестового стенда (192.168.0.9)
+## Проверка на тестовом стенде
 
-> **Шифрование MongoDB ВКЛЮЧЕНО и работает** (проверено 2026-10-21).
->
-> - OpenBao работает с **TLS** на `:8200` (серверный сертификат SAN=openbao, CA — `.deploy/docker/openbao/tls/`); loopback HTTP `:8201` используется только для healthcheck/CLI (в образе BusyBox wget без `--no-check-certificate`).
-> - PSMDB подключается к OpenBao по HTTPS и получает мастер-ключ из **KV v2** секрета `secret/data/psmdb-encryption` (PSMDB 5.0 поддерживает только KV v2).
-> - `init.js` монтируется в `/opt/init/init.js` (НЕ в `/docker-entrypoint-initdb.d`): entrypoint PSMDB иначе сначала запускает временный **незашифрованный** mongod, который создаёт plaintext-метаданные WiredTiger, нечитаемые зашифрованным mongod. Скрипт выполняется из `deploy-encrypted.sh`.
-> - В образе PSMDB нет `mongosh` и `openssl` — используется legacy `mongo`.
-> - Развёртывание: `.deploy/scripts/deploy-encrypted.sh` (с Windows — `.deploy/scripts/deploy-from-windows.ps1`), верификация: `.deploy/scripts/verify-encrypted-stack.sh`.
+Развёртывание полностью проверено на тестовом стенде (Linux-сервер, Docker Engine + Compose v2). В процессе отладки были выявлены и исправлены следующие проблемы — они учтены в текущих скриптах и конфигурации:
+
+| Проблема | Причина | Решение |
+|---|---|---|
+| mongod не стартовал: `unable to read root page from file:WiredTiger.wt` | entrypoint PSMDB запускал временный **незашифрованный** mongod из `/docker-entrypoint-initdb.d/init.js`, создававший plaintext-метаданные WiredTiger | `init.js` монтируется в `/opt/init/init.js` и выполняется из `deploy-encrypted.sh` после старта зашифрованного mongod |
+| PSMDB не мог подключиться к OpenBao | OpenBao слушал только plain HTTP; vault interface PSMDB 5.0 работает по HTTPS | OpenBao переведён на TLS `:8200` (SAN: openbao, localhost, 127.0.0.1); loopback HTTP `:8201` — только для healthcheck/CLI |
+| Секрет `secret/psmdb-encryption` не читался | PSMDB 5.0 поддерживает только **KV v2** (API-путь `secret/data/...`) | OpenBao инициализируется с KV v2 |
+| `rm -rf /tmp/dump` в контейнере падал | файлы после `docker compose cp` принадлежали root, а exec шёл от uid 1001 | удаление через `docker compose exec -u 0` |
+| Потеря миграционного дампа при падении exec на «restarting»-контейнере | mongod ещё не отвечал на ping | добавлена ping-проверка готовности mongod; существующий дамп не перезаписывается; аварийный скрипт `redump-from-backup.sh` |
+| HSS/PCRF падали, AMF не биндил SCTP `:38412` | AMF пытался биндить несуществующий IP хоста | адреса AMF/UPF N3 в `docker-compose.override.yaml` / `.env` приведены к реальному IP стенда |
+| `mongosh`, `openssl` не найдены в контейнере | в образе PSMDB 5.0 только legacy `mongo` | все проверки переведены на `mongo`; TLS-проверка — с хоста |
+| Скрипты не запускались после `git pull` на стенде | коммиты из Windows теряли executable bit | `git update-index --chmod=+x` перед коммитом |
 
 ---
 
@@ -126,31 +163,47 @@ docker compose logs -f openbao mongodb
 
 ### 3. Проверка шифрования
 
+Быстрая проверка — скрипт верификации (статус контейнеров, БД и коллекции, шифрование в логах mongod, TLS-соединение, KV v2 секрет, отсутствие plaintext IMSI в файлах хранилища, webui):
+
 ```bash
-# Запустить скрипт верификации (статус контейнеров, БД, TLS, KV v2,
-# отсутствие plaintext IMSI в файлах хранилища, webui)
 bash .deploy/scripts/verify-encrypted-stack.sh
 ```
 
+Дополнительные ручные проверки — см. раздел «Проверка корректности шифрования» ниже.
+
 ---
 
-## Миграция с существующей MongoDB
+## Развёртывание с миграцией: `deploy-encrypted.sh`
 
-Если в текущей базе уже есть данные абонентов, выполните миграцию:
+Основной скрипт — `.deploy/scripts/deploy-encrypted.sh`. Запускается **на сервере** из корня проекта (с Windows-хоста — через `deploy-from-windows.ps1`, см. ниже). Скрипт идемпотентный: при повторном запуске пропускает уже выполненное (существующие сертификаты, существующий дамп).
 
-```bash
-bash .deploy/scripts/deploy-encrypted.sh
-```
+Выполняет 8 шагов:
 
-Скрипт выполнит:
-1. Генерацию TLS-сертификатов OpenBao (если отсутствуют)
-2. `mongodump` из текущей базы (если дамп ещё не снят)
-3. Остановку стека
-4. Резервное копирование старых томов данных (`mongodb-plain-<ts>`, `openbao-old-<ts>`)
-5. Запуск OpenBao (TLS + KV v2) + PSMDB с шифрованием
-6. `mongorestore` данных в зашифрованное хранилище + выполнение `init.js`
-7. Запуск всех Open5GS-сервисов
-8. Верификацию
+| Шаг | Что делает | Детали |
+|---|---|---|
+| **1/8** | Генерация TLS-сертификатов OpenBao | вызывает `generate-certs.sh`; пропускается, если сертификаты уже есть в `.deploy/docker/openbao/tls/` |
+| **2/8** | Снятие дампа существующей БД | если mongod жив (ping, а не только статус контейнера — контейнер может быть в restart-loop) → `mongodump` через `docker compose exec`; существующий дамп `.deploy/dump-migration/dump` **не перезаписывается** |
+| **3/8** | Остановка стека | `docker compose down` |
+| **4/8** | Бэкап старых томов | `mongodb` → `mongodb-plain-<ts>`, `openbao` → `openbao-old-<ts>` (перемещение через docker-контейнер, если владелец root); пересоздание `mongodb/` с chown `1001:1001` (иначе mongod падает: lock-файл в read-only каталоге) |
+| **5/8** | Старт OpenBao + PSMDB | `docker compose up -d openbao mongodb` + ожидание healthcheck (OpenBao 120 с, PSMDB 240 с; при неудаче — печать логов и выход) |
+| **6/8** | Восстановление данных | `docker compose cp` дампа в `/tmp/dump` → `mongorestore` → удаление `/tmp/dump` от root (`exec -u 0`) → выполнение `init.js` (idempotent-создание админа WebUI) |
+| **7/8** | Старт всего стека | `docker compose up -d` |
+| **8/8** | Верификация | secrets engines, наличие мастер-ключа в KV, лог mongod (vault/encryption), TLS mongod→OpenBao, отсутствие plaintext IMSI в `.wt`, список БД, статус сервисов |
+
+> **Важно**: скрипт ре-инициализирует OpenBao (генерируется **новый** мастер-ключ). Для обычного старта/перезагрузки уже зашифрованного стенда используйте `docker compose up -d`, а не этот скрипт.
+
+## Вспомогательные скрипты
+
+Все скрипты лежат в `.deploy/scripts/` и запускаются на сервере из корня проекта (сами разрешают свой путь):
+
+| Скрипт | Назначение |
+|---|---|
+| `deploy-encrypted.sh` | Полное развёртывание с миграцией на зашифрованную PSMDB (8 шагов, см. выше). Основной скрипт |
+| `generate-certs.sh` | Генерация CA (10 лет) и серверного сертификата OpenBao (825 дней, SAN: openbao, localhost, 127.0.0.1) в `.deploy/docker/openbao/tls/`. Пропускается, если сертификаты существуют. Вызывается из `deploy-encrypted.sh` |
+| `verify-encrypted-stack.sh` | Верификация работающего стенда — 8 проверок: статус контейнеров, список БД, счётчики коллекций (`subscribers`, `accounts`), лог шифрования mongod, TLS-соединение с хоста, мастер-ключ в KV v2, отсутствие plaintext IMSI в `/data/db`, `init.js` + HTTP-проверка webui |
+| `redump-from-backup.sh` | Аварийный: пересоздание миграционного дампа из plaintext-бэкапа `mongodb-plain-*` через временный mongod-контейнер (если оригинальный дамп потерян). Использование: `bash .deploy/scripts/redump-from-backup.sh [backup-dir-name]` |
+| `deploy-from-windows.ps1` | Запуск деплоя **с Windows-хоста**: нормализация CRLF→LF → scp изменённых файлов на сервер → один ssh-вызов `deploy-encrypted.sh` (обход проблем экранирования кавычек PowerShell→ssh). Использование: `powershell -ExecutionPolicy Bypass -File .deploy\scripts\deploy-from-windows.ps1` |
+| `inspect-stand.sh` | Диагностика стенда: образы и монтирования контейнеров mongodb/openbao, содержимое `local-data`, реальные пути данных внутри контейнеров, compose-метки |
 
 ---
 
@@ -160,7 +213,6 @@ bash .deploy/scripts/deploy-encrypted.sh
 
 ```bash
 bash .deploy/scripts/verify-encrypted-stack.sh
-# (старое имя verify-encryption.sh сохранено как wrapper)
 ```
 
 ### Метод 2: Ручная проверка файлов данных
@@ -192,22 +244,26 @@ docker compose exec mongodb mongo --quiet --eval "db.adminCommand('getParameter'
 # Ожидается: enableEncryption: true, vault: { serverName: "openbao", ... }
 ```
 
-### Метод 4: Утилиты open5gs-utils (проверка работоспособности данных)
+### Метод 4: Лог mongod
 
 ```bash
-# Данные читаются через живой mongod (расшифровка прозрачная — это нормально)
-../open5gs-utils/ctrl-imsi-profile.py list
-../open5gs-utils/ctrl-imsi-profile.py show --imsi 466012345678901
+docker compose logs mongodb 2>&1 | grep -i "master encryption key"
+# Ожидается: "Master encryption key has been read from the key management facility" (Vault, KV v2)
 ```
 
-Утилиты массового управления профилями (все работают с зашифрованной БД без каких-либо изменений, т.к. подключаются к живому mongod):
+### Метод 5: TLS-соединение с OpenBao (с хоста)
 
-| Утилита | Назначение |
-|---|---|
-| `ctrl-imsi-profile.py` | Просмотр/создание/изменение/удаление профилей абонентов (`show`, `list`, `add`, `del`, ...) |
-| `add_imsi_docker.py` | Массовое добавление абонентов из списка |
-| `ctrl-imsi-export.py` | Экспорт профилей (дамп в человекочитаемом виде — **файл экспорта не зашифрован**, защищайте его отдельно) |
-| `eki_to_ki.py` | Конвертация EKI → KI для ключей безопасности |
+```bash
+echo | openssl s_client -connect localhost:8200 -CAfile .deploy/docker/openbao/tls/ca.crt 2>/dev/null | grep -E "Verify return code|subject="
+# Ожидается: Verify return code: 0 (ok), subject CN=openbao
+```
+
+### Метод 6: Мастер-ключ в KV v2
+
+```bash
+docker compose exec openbao sh -c 'export BAO_TOKEN=$(cat /openbao/secrets/root-token); bao kv get secret/psmdb-encryption'
+# Поле value — 96-символьный base64 мастер-ключ (не публикуйте его!)
+```
 
 ---
 
