@@ -21,7 +21,7 @@ docker run -d --rm --name mongod-dump-temp --entrypoint "" \
 
 echo "Waiting for temporary mongod..."
 for i in $(seq 1 60); do
-  if docker exec mongod-dump-temp mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
+  if docker exec mongod-dump-temp mongo --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
     echo "temporary mongod is ready"; break
   fi
   sleep 2

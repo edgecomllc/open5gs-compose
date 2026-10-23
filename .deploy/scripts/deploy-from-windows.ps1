@@ -19,6 +19,7 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 # Files that must be synced to the server (relative to the project root, forward slashes)
 $Files = @(
     'docker-compose.yaml',
+    'docker-compose.encryption.yaml',
     '.deploy/docker/openbao/openbao.hcl',
     '.deploy/docker/openbao/entrypoint.sh',
     '.deploy/docker/psmdb/mongod.conf',

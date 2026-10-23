@@ -22,64 +22,20 @@ volumes:
 services:
 
 # Common services
-  openbao:
-    image: ghcr.io/openbao/openbao:2.0.0
-    <<: *container_defaults
-    hostname: openbao
-    ports:
-      - "8200:8200"
-    volumes:
-      - ${DOCKER_SHARED_DIR}/openbao/data:/openbao/data
-      - ${DOCKER_SHARED_DIR}/openbao/secrets:/openbao/secrets
-      - .deploy/docker/openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
-      - .deploy/docker/openbao/entrypoint.sh:/openbao/entrypoint.sh:ro
-      - .deploy/docker/openbao/tls:/openbao/tls:ro
-    environment:
-      # Loopback HTTP listener (8201) is used by the CLI/healthcheck inside the container;
-      # external clients (PSMDB) connect over TLS to openbao:8200.
-      - BAO_ADDR=http://127.0.0.1:8201
-    entrypoint: ["/bin/sh", "/openbao/entrypoint.sh"]
-    cap_add:
-      - IPC_LOCK
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - wget -qO- http://127.0.0.1:8201/v1/sys/health | grep -q '"sealed":false'
-      interval: 5s
-      timeout: 3s
-      retries: 15
-      start_period: 15s
-    networks:
-      core-network:
-
   mongodb:
-    image: percona/percona-server-mongodb:5.0
+    image: mongo:5.0.10-focal
     <<: *container_defaults
     ports:
       - ${MONGO_EXT_PORT}:27017
     volumes:
       - ${DOCKER_SHARED_DIR}/mongodb:/data/db
-      # NOTE: init.js is NOT mounted to /docker-entrypoint-initdb.d on purpose:
-      # the PSMDB entrypoint would first run a temporary UNENCRYPTED mongod,
-      # which creates plaintext WiredTiger metadata that the encrypted mongod
-      # then cannot open. The script is executed by deploy-encrypted.sh instead.
-      - .deploy/docker/mongodb/init.js:/opt/init/init.js:ro
-      - .deploy/docker/psmdb/mongod.conf:/etc/mongod.conf:ro
-      - ${DOCKER_SHARED_DIR}/openbao/secrets:/etc/mongodb-encryption:ro
-      # CA certificate of OpenBao, used by the PSMDB vault interface (TLS)
-      - .deploy/docker/openbao/tls:/etc/mongodb-tls:ro
-    command: ["mongod", "--config", "/etc/mongod.conf"]
-    depends_on:
-      openbao:
-        condition: service_healthy
+      - .deploy/docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
     healthcheck:
-      test: >
-        sh -c 'echo "db.runCommand(\"ping\").ok" | mongosh 127.0.0.1:27017/test --quiet 2>/dev/null ||
-               echo "db.runCommand(\"ping\").ok" | mongo 127.0.0.1:27017/test --quiet 2>/dev/null'
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
+      test: echo 'db.runCommand("ping").ok' | mongo 127.0.0.1:27017/test --quiet
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
     networks:
       core-network:
 

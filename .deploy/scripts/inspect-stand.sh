@@ -45,7 +45,7 @@ docker exec open5gs-compose-openbao-1 sh -c 'ls -la /openbao/secrets/ 2>&1; ls /
 echo ""
 echo "=== compose project containers labels (which compose project they belong to) ==="
 docker inspect open5gs-compose-mongodb-1 --format '{{index .Config.Labels "com.docker.compose.project"}} / config-hash: {{index .Config.Labels "com.docker.compose.config-hash"}}' 2>/dev/null || true
-cd "$PROJECT_DIR" && docker compose config --hash mongodb 2>/dev/null || true
+cd "$PROJECT_DIR" && docker compose -f docker-compose.yaml -f docker-compose.override.yaml -f docker-compose.encryption.yaml config --hash mongodb 2>/dev/null || true
 
 echo ""
 echo "INSPECTION DONE"

@@ -17,6 +17,10 @@
 # .deploy/docker/local-data/openbao-old-<timestamp>/.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# Compose file chain: base + stand overrides + encrypted PSMDB overlay.
+# The explicit -f chain keeps this script independent of COMPOSE_FILE in .env.
+COMPOSE_FILES=(-f docker-compose.yaml -f docker-compose.override.yaml -f docker-compose.encryption.yaml)
+dc() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
 
 DATA_DIR=".deploy/docker/local-data/mongodb"
 BAO_DIR=".deploy/docker/local-data/openbao"
@@ -37,7 +41,7 @@ move_dir() {
 # Wait until a compose service is healthy; print logs and fail otherwise.
 wait_healthy() {
   local svc="$1" timeout="${2:-180}" waited=0 cid st
-  cid=$(docker compose ps -q "$svc" 2>/dev/null || true)
+  cid=$(dc ps -q "$svc" 2>/dev/null || true)
   if [ -z "$cid" ]; then
     log "ERROR: no container for service '$svc'"
     return 1
@@ -45,7 +49,7 @@ wait_healthy() {
   while [ "$waited" -lt "$timeout" ]; do
     if [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" != "true" ]; then
       log "ERROR: '$svc' container is not running. Recent logs:"
-      docker compose logs --tail 60 "$svc" || true
+      dc logs --tail 60 "$svc" || true
       return 1
     fi
     st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo none)
@@ -55,14 +59,14 @@ wait_healthy() {
     fi
     if [ "$st" = "unhealthy" ]; then
       log "ERROR: '$svc' is unhealthy. Recent logs:"
-      docker compose logs --tail 60 "$svc" || true
+      dc logs --tail 60 "$svc" || true
       return 1
     fi
     sleep 3
     waited=$((waited + 3))
   done
   log "ERROR: timed out waiting for '$svc'. Recent logs:"
-  docker compose logs --tail 60 "$svc" || true
+  dc logs --tail 60 "$svc" || true
   return 1
 }
 
@@ -75,21 +79,21 @@ if [ -d "$DUMP_DIR/dump" ]; then
   HAVE_DUMP=true
   log "Existing dump found at $DUMP_DIR/dump, keeping it (no re-dump)."
 elif [ -d "$DATA_DIR" ] && ls "$DATA_DIR"/WiredTiger* >/dev/null 2>&1; then
-  MDB_CID=$(docker compose ps -q mongodb 2>/dev/null || true)
+  MDB_CID=$(dc ps -q mongodb 2>/dev/null || true)
   MDB_RUNNING=false
   # "Running" is not enough: the container may be in a restart loop.
   # Only use the exec path if mongod actually answers a ping.
   if [ -n "$MDB_CID" ] && [ "$(docker inspect -f '{{.State.Running}}' "$MDB_CID" 2>/dev/null || echo false)" = "true" ] && \
-     docker compose exec -T mongodb mongo --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
+     dc exec -T mongodb mongo --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
     MDB_RUNNING=true
   fi
   if [ "$MDB_RUNNING" = "true" ]; then
-    log "mongodb is running, dumping via docker compose exec..."
+    log "mongodb is running, dumping via compose exec..."
     rm -rf "$DUMP_DIR"
     mkdir -p "$DUMP_DIR"
-    docker compose exec -T mongodb sh -c 'rm -rf /tmp/dump && mongodump --out=/tmp/dump'
-    docker compose cp mongodb:/tmp/dump "$DUMP_DIR/dump"
-    docker compose exec -T -u 0 mongodb rm -rf /tmp/dump
+    dc exec -T mongodb sh -c 'rm -rf /tmp/dump && mongodump --out=/tmp/dump'
+    dc cp mongodb:/tmp/dump "$DUMP_DIR/dump"
+    dc exec -T -u 0 mongodb rm -rf /tmp/dump
   else
     log "mongodb is not running, starting temporary plain mongod for the dump..."
     rm -rf "$DUMP_DIR"
@@ -100,7 +104,7 @@ elif [ -d "$DATA_DIR" ] && ls "$DATA_DIR"/WiredTiger* >/dev/null 2>&1; then
       percona/percona-server-mongodb:5.0 \
       mongod --dbpath /data/db --bind_ip 127.0.0.1 --port 27017 >/dev/null
     for i in $(seq 1 60); do
-      if docker exec mongod-dump-temp mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
+      if docker exec mongod-dump-temp mongo --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
       sleep 2
     done
     docker exec mongod-dump-temp sh -c 'rm -rf /tmp/dump && mongodump --out=/tmp/dump'
@@ -114,7 +118,7 @@ else
 fi
 
 log "=== Step 3/8: stop the stack ==="
-docker compose down --remove-orphans || true
+dc down --remove-orphans || true
 
 log "=== Step 4/8: back up old data dirs ==="
 if [ -d "$DATA_DIR" ]; then
@@ -138,40 +142,40 @@ docker run --rm --user 0:0 --entrypoint "" \
 log "Data dir '$DATA_DIR' ready (owned by uid 1001)."
 
 log "=== Step 5/8: start OpenBao (TLS + KV v2) and encrypted PSMDB ==="
-docker compose up -d openbao mongodb
+dc up -d openbao mongodb
 wait_healthy openbao 120
 wait_healthy mongodb 240
 
 log "=== Step 6/8: restore data dump into encrypted PSMDB ==="
 if [ "$HAVE_DUMP" = "true" ] || [ -d "$DUMP_DIR/dump" ]; then
-  docker compose cp "$DUMP_DIR/dump" mongodb:/tmp/dump
-  docker compose exec -T mongodb mongorestore /tmp/dump
-  docker compose exec -T -u 0 mongodb rm -rf /tmp/dump
+  dc cp "$DUMP_DIR/dump" mongodb:/tmp/dump
+  dc exec -T mongodb mongorestore /tmp/dump
+  dc exec -T -u 0 mongodb rm -rf /tmp/dump
   log "Data restored into encrypted storage."
 else
   log "No dump to restore (fresh deployment)."
 fi
 
 # Create the webui admin account (previously done via docker-entrypoint-initdb.d,
-# which is incompatible with encryption - see docker-compose.yaml note).
+# which is incompatible with encryption - see docker-compose.encryption.yaml note).
 log "Running init.js (webui admin account)..."
-docker compose exec -T mongodb mongo --quiet /opt/init/init.js
+dc exec -T mongodb mongo --quiet /opt/init/init.js
 log "init.js done."
 
 log "=== Step 7/8: start the whole stack ==="
-docker compose up -d
+dc up -d
 
 log "=== Step 8/8: verification ==="
 echo "--- OpenBao: secrets engines ---"
-docker compose exec -T openbao sh -c \
+dc exec -T openbao sh -c \
   'export BAO_ADDR=http://127.0.0.1:8201 BAO_TOKEN=$(cat /openbao/secrets/root-token); bao secrets list'
 echo "--- OpenBao: PSMDB master key present ---"
-docker compose exec -T openbao sh -c \
+dc exec -T openbao sh -c \
   'export BAO_ADDR=http://127.0.0.1:8201 BAO_TOKEN=$(cat /openbao/secrets/root-token); bao kv get -field=value secret/psmdb-encryption >/dev/null && echo "master key: OK"'
 echo "--- mongod log: vault/encryption lines ---"
-docker compose logs mongodb 2>&1 | grep -iE 'vault|encrypt' | tail -10 || echo "(no vault/encryption lines found in logs)"
+dc logs mongodb 2>&1 | grep -iE 'vault|encrypt' | tail -10 || echo "(no vault/encryption lines found in logs)"
 echo "--- TLS from mongodb container to openbao:8200 ---"
-docker compose exec -T mongodb sh -c \
+dc exec -T mongodb sh -c \
   'openssl s_client -CAfile /etc/mongodb-tls/ca.crt -connect openbao:8200 </dev/null 2>/dev/null | grep -E "Verify return code|subject=" || echo "TLS check failed"'
 echo "--- data files must not contain plaintext (IMSI patterns) ---"
 WT_FILE=$(ls .deploy/docker/local-data/mongodb/collection-*.wt 2>/dev/null | head -1 || true)
@@ -185,10 +189,10 @@ else
   log "(no collection .wt files yet)"
 fi
 echo "--- databases ---"
-docker compose exec -T mongodb mongosh --quiet --eval \
+dc exec -T mongodb mongo --quiet --eval \
   'db.adminCommand({listDatabases:1}).databases.forEach(function(d){print(d.name)})' || true
 echo "--- services ---"
-docker compose ps --format 'table {{.Service}}\t{{.Status}}'
+dc ps --format 'table {{.Service}}\t{{.Status}}'
 
 log "=================================================="
 log "DEPLOYMENT COMPLETE"

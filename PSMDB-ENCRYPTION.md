@@ -11,10 +11,10 @@
 | СУБД | MongoDB Community Edition | **Percona Server for MongoDB (PSMDB) 5.0** — drop-in замена по протоколу и URI |
 | Шифрование данных | Отсутствует (данные на диске в открытом виде) | **Data-at-Rest Encryption** на уровне движка WiredTiger |
 | Хранение ключей | — | Новый сервис **OpenBao** (открытый форк HashiCorp Vault) — внешний KMS с TLS |
-| `docker-compose.yaml` | Сервис `mongodb` на образе Community | Сервис `mongodb` на образе PSMDB + сервис `openbao`, healthcheck'и, монтирования (токен, CA-сертификат, `init.js` в `/opt/init`) |
+| Compose-файлы | Только `docker-compose.yaml`: сервис `mongodb` на образе Community | `docker-compose.yaml` возвращён к базовому виду; шифрование вынесено в overlay **`docker-compose.encryption.yaml`** (сервис `openbao` + замена `mongodb` на PSMDB: mongod.conf с vault, `!override` volumes, `init.js` в `/opt/init`). Подключается цепочкой `-f` или через `COMPOSE_FILE` в `.env` |
 | Конфигурация mongod | Стандартная | `.deploy/docker/psmdb/mongod.conf`: `security.enableEncryption` + секция `vault` |
 | Скрипты | — | `.deploy/scripts/`: развёртывание с миграцией, генерация TLS-сертификатов, верификация, диагностика |
-| Прочее | — | `docker-compose.override.yaml`, `.env`: адреса AMF/N3 для стенда |
+| Прочее | — | `docker-compose.override.yaml`, `.env` (адреса AMF/N3 для стенда, `COMPOSE_FILE` с overlay шифрования, `MONGO_EXT_PORT=27017`) |
 
 Ключевое свойство: **Open5GS продолжает работать без изменений кода и конфигурации** — PSMDB бинарно совместима с MongoDB Community, шифрование прозрачно для клиентов БД, а `DB_URI: mongodb://mongodb/open5gs` не меняется.
 
@@ -137,12 +137,46 @@ docker compose up -d
 
 ---
 
+## Структура compose-файлов
+
+Шифрование PSMDB вынесено из базового `docker-compose.yaml` в отдельный overlay-файл **`docker-compose.encryption.yaml`**:
+
+| Файл | Содержимое |
+|---|---|
+| `docker-compose.yaml` | Базовый стек open5gs-compose (как в исходном коммите `95f82d1`): `mongodb` — обычный `mongo:5.0.10-focal`, `init.js` в `/docker-entrypoint-initdb.d`. Сервиса `openbao` нет |
+| `docker-compose.override.yaml` | Стенд-специфичные переопределения (eUPF, NAT и т.п.) — как в базовом репозитории |
+| `docker-compose.encryption.yaml` | **Overlay шифрования**: сервис `openbao` + замена `mongodb` на PSMDB 5.0 (mongod.conf с vault, `volumes: !override`, `init.js` в `/opt/init/init.js`, `depends_on: openbao`) |
+
+Ключевые моменты overlay:
+
+- `volumes: !override` — **полностью заменяет** список монтирований `mongodb` из базового файла (требуется Compose >= 2.24). Без этого `init.js` остался бы примонтирован в `/docker-entrypoint-initdb.d`, что несовместимо с шифрованием: entrypoint PSMDB сначала запускает временный **незашифрованный** mongod.
+- `image: percona/percona-server-mongodb:5.0` заменяет `mongo:5.0.10-focal` (при merge скалярное поле из overlay побеждает).
+- Порт `${MONGO_EXT_PORT}:27017` наследуется из базового файла без изменений.
+
+Подключение overlay — один из двух способов:
+
+```bash
+# Способ 1: явная цепочка -f
+docker compose -f docker-compose.yaml -f docker-compose.override.yaml \
+               -f docker-compose.encryption.yaml up -d
+
+# Способ 2: COMPOSE_FILE в .env (на стенде уже настроено; разделитель ':' на Linux, ';' на Windows)
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.override.yaml:docker-compose.encryption.yaml
+docker compose up -d
+```
+
+> **Важно**: без overlay (только базовый файл) стек запустит обычную **незашифрованную** MongoDB. Никогда не запускайте базовый файл отдельно поверх данных, записанных зашифрованной PSMDB — plain-mongod не сможет их открыть. На стенде `COMPOSE_FILE` прописан в `.env`, поэтому все команды `docker compose ...` в этой документации корректны; без `.env` используйте цепочку `-f` или `export COMPOSE_FILE=...`.
+
+> **Порт 27017**: ранее на стенде работал системный `mongod.service` (systemd), слушавший `127.0.0.1:27017`, из-за чего контейнерная БД была опубликована на порту 27018. Системный mongod остановлен и отключен (`sudo systemctl disable --now mongod`; данные в `/var/lib/mongodb` сохранены), в `.env` возвращено `MONGO_EXT_PORT=27017`.
+
+---
+
 ## Быстрый старт (новое развёртывание)
 
 ### 1. Предварительные требования
 
 - Docker Engine >= 24.0
-- Docker Compose >= 2.20 (поддержка `depends_on` с `condition: service_healthy`)
+- Docker Compose >= 2.24 (поддержка `depends_on` с `condition: service_healthy` и тегов `!reset`/`!override` для замены списков в overlay)
 - Пустой том данных MongoDB (шифрование включается **только при первом запуске на пустом хранилище**)
 
 ### 2. Первый запуск
