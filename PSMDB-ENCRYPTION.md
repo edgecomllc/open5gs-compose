@@ -50,7 +50,7 @@
 
 ---
 
-## Как работает прозрачное шифрование (и почему данные «видно»)
+## Как работает прозрачное шифрование
 
 ### Принцип Data-at-Rest
 
@@ -120,23 +120,6 @@ docker compose up -d
 
 ---
 
-## Проверка на тестовом стенде
-
-Развёртывание полностью проверено на тестовом стенде (Linux-сервер, Docker Engine + Compose v2). В процессе отладки были выявлены и исправлены следующие проблемы — они учтены в текущих скриптах и конфигурации:
-
-| Проблема | Причина | Решение |
-|---|---|---|
-| mongod не стартовал: `unable to read root page from file:WiredTiger.wt` | entrypoint PSMDB запускал временный **незашифрованный** mongod из `/docker-entrypoint-initdb.d/init.js`, создававший plaintext-метаданные WiredTiger | `init.js` монтируется в `/opt/init/init.js` и выполняется из `deploy-encrypted.sh` после старта зашифрованного mongod |
-| PSMDB не мог подключиться к OpenBao | OpenBao слушал только plain HTTP; vault interface PSMDB 5.0 работает по HTTPS | OpenBao переведён на TLS `:8200` (SAN: openbao, localhost, 127.0.0.1); loopback HTTP `:8201` — только для healthcheck/CLI |
-| Секрет `secret/psmdb-encryption` не читался | PSMDB 5.0 поддерживает только **KV v2** (API-путь `secret/data/...`) | OpenBao инициализируется с KV v2 |
-| `rm -rf /tmp/dump` в контейнере падал | файлы после `docker compose cp` принадлежали root, а exec шёл от uid 1001 | удаление через `docker compose exec -u 0` |
-| Потеря миграционного дампа при падении exec на «restarting»-контейнере | mongod ещё не отвечал на ping | добавлена ping-проверка готовности mongod; существующий дамп не перезаписывается; аварийный скрипт `redump-from-backup.sh` |
-| HSS/PCRF падали, AMF не биндил SCTP `:38412` | AMF пытался биндить несуществующий IP хоста | адреса AMF/UPF N3 в `docker-compose.override.yaml` / `.env` приведены к реальному IP стенда |
-| `mongosh`, `openssl` не найдены в контейнере | в образе PSMDB 5.0 только legacy `mongo` | все проверки переведены на `mongo`; TLS-проверка — с хоста |
-| Скрипты не запускались после `git pull` на стенде | коммиты из Windows теряли executable bit | `git update-index --chmod=+x` перед коммитом |
-
----
-
 ## Структура compose-файлов
 
 Шифрование PSMDB вынесено из базового `docker-compose.yaml` в отдельный overlay-файл **`docker-compose.encryption.yaml`**:
@@ -166,8 +149,6 @@ docker compose up -d
 ```
 
 > **Важно**: без overlay (только базовый файл) стек запустит обычную **незашифрованную** MongoDB. Никогда не запускайте базовый файл отдельно поверх данных, записанных зашифрованной PSMDB — plain-mongod не сможет их открыть. На стенде `COMPOSE_FILE` прописан в `.env`, поэтому все команды `docker compose ...` в этой документации корректны; без `.env` используйте цепочку `-f` или `export COMPOSE_FILE=...`.
-
-> **Порт 27017**: ранее на стенде работал системный `mongod.service` (systemd), слушавший `127.0.0.1:27017`, из-за чего контейнерная БД была опубликована на порту 27018. Системный mongod остановлен и отключен (`sudo systemctl disable --now mongod`; данные в `/var/lib/mongodb` сохранены), в `.env` возвращено `MONGO_EXT_PORT=27017`.
 
 ---
 
@@ -209,7 +190,7 @@ bash .deploy/scripts/verify-encrypted-stack.sh
 
 ## Развёртывание с миграцией: `deploy-encrypted.sh`
 
-Основной скрипт — `.deploy/scripts/deploy-encrypted.sh`. Запускается **на сервере** из корня проекта (с Windows-хоста — через `deploy-from-windows.ps1`, см. ниже). Скрипт идемпотентный: при повторном запуске пропускает уже выполненное (существующие сертификаты, существующий дамп).
+Основной скрипт — `.deploy/scripts/deploy-encrypted.sh`. Запускается **на сервере** из корня проекта (с Windows-хоста — через локальный вспомогательный скрипт `deploy-from-windows.ps1`, в репозиторий не входит). Скрипт идемпотентный: при повторном запуске пропускает уже выполненное (существующие сертификаты, существующий дамп).
 
 Выполняет 8 шагов:
 
@@ -236,7 +217,7 @@ bash .deploy/scripts/verify-encrypted-stack.sh
 | `generate-certs.sh` | Генерация CA (10 лет) и серверного сертификата OpenBao (825 дней, SAN: openbao, localhost, 127.0.0.1) в `.deploy/docker/openbao/tls/`. Пропускается, если сертификаты существуют. Вызывается из `deploy-encrypted.sh` |
 | `verify-encrypted-stack.sh` | Верификация работающего стенда — 8 проверок: статус контейнеров, список БД, счётчики коллекций (`subscribers`, `accounts`), лог шифрования mongod, TLS-соединение с хоста, мастер-ключ в KV v2, отсутствие plaintext IMSI в `/data/db`, `init.js` + HTTP-проверка webui |
 | `redump-from-backup.sh` | Аварийный: пересоздание миграционного дампа из plaintext-бэкапа `mongodb-plain-*` через временный mongod-контейнер (если оригинальный дамп потерян). Использование: `bash .deploy/scripts/redump-from-backup.sh [backup-dir-name]` |
-| `deploy-from-windows.ps1` | Запуск деплоя **с Windows-хоста**: нормализация CRLF→LF → scp изменённых файлов на сервер → один ssh-вызов `deploy-encrypted.sh` (обход проблем экранирования кавычек PowerShell→ssh). Использование: `powershell -ExecutionPolicy Bypass -File .deploy\scripts\deploy-from-windows.ps1` |
+| `deploy-from-windows.ps1` *(локальный, в git не входит)* | Запуск деплоя **с Windows-хоста**: нормализация CRLF→LF → scp изменённых файлов на сервер → один ssh-вызов `deploy-encrypted.sh` (обход проблем экранирования кавычек PowerShell→ssh). Использование: `powershell -ExecutionPolicy Bypass -File .deploy\scripts\deploy-from-windows.ps1` |
 | `inspect-stand.sh` | Диагностика стенда: образы и монтирования контейнеров mongodb/openbao, содержимое `local-data`, реальные пути данных внутри контейнеров, compose-метки |
 
 ---

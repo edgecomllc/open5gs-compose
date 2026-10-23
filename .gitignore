@@ -4,6 +4,10 @@ backups/
 .deploy/docker/openbao/tls/
 .deploy/dump-migration/
 
+# Local helpers / notes (not part of the repo)
+.deploy/scripts/deploy-from-windows.ps1
+PSMDB-ENCRYPTION-NOTES.md
+
 *.log
 
 .DS_Store
