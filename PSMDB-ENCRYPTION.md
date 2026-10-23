@@ -184,6 +184,8 @@ docker compose logs -f openbao mongodb
 bash .deploy/scripts/verify-encrypted-stack.sh
 ```
 
+> Скрипт универсален для тестового стенда и рабочего деплоя: параметры окружения `IMSI_PATTERN` (regex plaintext-IMSI; по умолчанию тестовый диапазон `99999…` — для реальных IMSI задайте свой префикс, например `IMSI_PATTERN='25001[0-9]{10}'`), `BAO_ADDR` (по умолчанию `localhost:8200`) и `WEBUI_URL` (по умолчанию `http://localhost:9999/`) переопределяются при запуске.
+
 Дополнительные ручные проверки — см. раздел «Проверка корректности шифрования» ниже.
 
 ---
@@ -215,9 +217,9 @@ bash .deploy/scripts/verify-encrypted-stack.sh
 |---|---|
 | `deploy-encrypted.sh` | Полное развёртывание с миграцией на зашифрованную PSMDB (8 шагов, см. выше). Основной скрипт |
 | `generate-certs.sh` | Генерация CA (10 лет) и серверного сертификата OpenBao (825 дней, SAN: openbao, localhost, 127.0.0.1) в `.deploy/docker/openbao/tls/`. Пропускается, если сертификаты существуют. Вызывается из `deploy-encrypted.sh` |
-| `verify-encrypted-stack.sh` | Верификация работающего стенда — 8 проверок: статус контейнеров, список БД, счётчики коллекций (`subscribers`, `accounts`), лог шифрования mongod, TLS-соединение с хоста, мастер-ключ в KV v2, отсутствие plaintext IMSI в `/data/db`, `init.js` + HTTP-проверка webui |
+| `verify-encrypted-stack.sh` | Верификация работающего деплоя — 8 проверок: статус контейнеров, список БД, счётчики коллекций (`subscribers`, `accounts`), лог шифрования mongod, TLS-соединение, мастер-ключ в KV v2, отсутствие plaintext IMSI в `/data/db`, `init.js` + HTTP-проверка webui. Параметры окружения (для рабочего деплоя): `IMSI_PATTERN`, `BAO_ADDR`, `WEBUI_URL` |
 | `redump-from-backup.sh` | Аварийный: пересоздание миграционного дампа из plaintext-бэкапа `mongodb-plain-*` через временный mongod-контейнер (если оригинальный дамп потерян). Использование: `bash .deploy/scripts/redump-from-backup.sh [backup-dir-name]` |
-| `inspect-stand.sh` | Диагностика стенда: образы и монтирования контейнеров mongodb/openbao, содержимое `local-data`, реальные пути данных внутри контейнеров, compose-метки |
+| `inspect-stand.sh` | Диагностика запущенного стека: образы и монтирования контейнеров mongodb/openbao (ID контейнеров резолвятся через compose — не зависят от имени проекта), содержимое `local-data`, реальные пути данных внутри контейнеров, compose-метки |
 
 ---
 
