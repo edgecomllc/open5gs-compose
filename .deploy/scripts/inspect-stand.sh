@@ -58,7 +58,7 @@ ls .deploy/docker/local-data/openbao/data/ 2>/dev/null | head || true
 echo ""
 echo "=== mongodb: where does mongod actually store data (inside running container) ==="
 if is_running "$MDB_CID"; then
-  docker exec "$MDB_CID" sh -c 'ps aux | head -5; echo ---; ls -la /data 2>&1; echo ---; mongo --quiet --eval "db.adminCommand({getParameter:1, dbPath:1})" 2>/dev/null || echo "dbPath query failed"' 2>&1 || true
+  docker exec "$MDB_CID" sh -c 'ps aux | head -5; echo ---; ls -la /data 2>&1; echo ---; mongo --quiet --eval "printjson(db.serverCmdLineOpts().parsed.storage.dbPath)" 2>/dev/null || echo "dbPath query failed"' 2>&1 || true
 else
   echo "mongodb container is not running"
 fi
