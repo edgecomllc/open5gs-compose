@@ -1,0 +1,83 @@
+# Encrypted PSMDB overlay for open5gs-compose.
+#
+# Applied ON TOP of the base docker-compose.yaml: adds the OpenBao KMS service
+# and replaces the plain MongoDB Community service with Percona Server for
+# MongoDB (PSMDB) 5.0 with data-at-rest encryption (WiredTiger + OpenBao over TLS).
+#
+# Enable it explicitly, either with -f:
+#   docker compose -f docker-compose.yaml -f docker-compose.override.yaml \
+#                  -f docker-compose.encryption.yaml up -d
+# or via COMPOSE_FILE in .env (already set on the test stand):
+#   COMPOSE_FILE=docker-compose.yaml:docker-compose.override.yaml:docker-compose.encryption.yaml
+#
+# Notes:
+# - volumes use the !override tag (Compose >= 2.24): the volume list of the base
+#   mongodb service is fully replaced. This is REQUIRED: init.js must not be
+#   mounted to /docker-entrypoint-initdb.d, because the PSMDB entrypoint would
+#   first run a temporary UNENCRYPTED mongod there. deploy-encrypted.sh executes
+#   init.js (/opt/init/init.js) after the encrypted restore instead.
+# - Without this overlay the stack runs the plain unencrypted mongo:5.0.10-focal
+#   from the base file. Never point the base file alone at a data directory that
+#   was written by the encrypted PSMDB.
+
+services:
+  openbao:
+    image: ghcr.io/openbao/openbao:2.0.0
+    restart: unless-stopped
+    hostname: openbao
+    ports:
+      - "8200:8200"
+    volumes:
+      - ${DOCKER_SHARED_DIR}/openbao/data:/openbao/data
+      - ${DOCKER_SHARED_DIR}/openbao/secrets:/openbao/secrets
+      - .deploy/docker/openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
+      - .deploy/docker/openbao/entrypoint.sh:/openbao/entrypoint.sh:ro
+      - .deploy/docker/openbao/tls:/openbao/tls:ro
+    environment:
+      # Loopback HTTP listener (8201) is used by the CLI/healthcheck inside the container;
+      # external clients (PSMDB) connect over TLS to openbao:8200.
+      - BAO_ADDR=http://127.0.0.1:8201
+    entrypoint: ["/bin/sh", "/openbao/entrypoint.sh"]
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:8201/v1/sys/health | grep -q '"sealed":false'
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s
+    networks:
+      core-network:
+
+  mongodb:
+    image: percona/percona-server-mongodb:5.0
+    restart: unless-stopped
+    ports:
+      - ${MONGO_EXT_PORT}:27017
+    volumes: !override
+      - ${DOCKER_SHARED_DIR}/mongodb:/data/db
+      # NOTE: init.js is NOT mounted to /docker-entrypoint-initdb.d on purpose:
+      # the PSMDB entrypoint would first run a temporary UNENCRYPTED mongod,
+      # which creates plaintext WiredTiger metadata that the encrypted mongod
+      # then cannot open. The script is executed by deploy-encrypted.sh instead.
+      - .deploy/docker/mongodb/init.js:/opt/init/init.js:ro
+      - .deploy/docker/psmdb/mongod.conf:/etc/mongod.conf:ro
+      - ${DOCKER_SHARED_DIR}/openbao/secrets:/etc/mongodb-encryption:ro
+      # CA certificate of OpenBao, used by the PSMDB vault interface (TLS)
+      - .deploy/docker/openbao/tls:/etc/mongodb-tls:ro
+    command: ["mongod", "--config", "/etc/mongod.conf"]
+    depends_on:
+      openbao:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        sh -c 'echo "db.runCommand(\"ping\").ok" | mongosh 127.0.0.1:27017/test --quiet 2>/dev/null ||
+               echo "db.runCommand(\"ping\").ok" | mongo 127.0.0.1:27017/test --quiet 2>/dev/null'
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      core-network:
