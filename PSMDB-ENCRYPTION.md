@@ -217,7 +217,6 @@ bash .deploy/scripts/verify-encrypted-stack.sh
 | `generate-certs.sh` | Генерация CA (10 лет) и серверного сертификата OpenBao (825 дней, SAN: openbao, localhost, 127.0.0.1) в `.deploy/docker/openbao/tls/`. Пропускается, если сертификаты существуют. Вызывается из `deploy-encrypted.sh` |
 | `verify-encrypted-stack.sh` | Верификация работающего стенда — 8 проверок: статус контейнеров, список БД, счётчики коллекций (`subscribers`, `accounts`), лог шифрования mongod, TLS-соединение с хоста, мастер-ключ в KV v2, отсутствие plaintext IMSI в `/data/db`, `init.js` + HTTP-проверка webui |
 | `redump-from-backup.sh` | Аварийный: пересоздание миграционного дампа из plaintext-бэкапа `mongodb-plain-*` через временный mongod-контейнер (если оригинальный дамп потерян). Использование: `bash .deploy/scripts/redump-from-backup.sh [backup-dir-name]` |
-| `deploy-from-windows.ps1` *(локальный, в git не входит)* | Запуск деплоя **с Windows-хоста**: нормализация CRLF→LF → scp изменённых файлов на сервер → один ssh-вызов `deploy-encrypted.sh` (обход проблем экранирования кавычек PowerShell→ssh). Использование: `powershell -ExecutionPolicy Bypass -File .deploy\scripts\deploy-from-windows.ps1` |
 | `inspect-stand.sh` | Диагностика стенда: образы и монтирования контейнеров mongodb/openbao, содержимое `local-data`, реальные пути данных внутри контейнеров, compose-метки |
 
 ---
